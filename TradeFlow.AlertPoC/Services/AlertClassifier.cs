@@ -2,26 +2,25 @@ using System.Net.Mail;
 using TradeFlow.AlertPoC.Models;
 using TradeFlow.AlertPoC.Services;
 
-namespace TradeFlow.AlertPoC.Services
-{
-    // Represents the normalized category of an alert after classification.
-    // // Using a record keeps each result immutable and comparable by value —
-    // // useful later when deduplicating or logging classification outcomes.
-    public record AlertClassification(
-        AlertCategory Category,
-        string Description
-    );
+namespace TradeFlow.AlertPoC.Services;
 
-    public enum AlertCategory
-    {
-        CallOptionEntry,
-        CallOptionExit,
-        PutOptionEntry,
-        PutOptionExit,
-        StockEntry,
-        StockExit,
-        Unclassified
-    }
+// Represents the normalized category of an alert after classification.
+// Using a record keeps each result immutable and comparable by value —
+// useful later when deduplicating or logging classification outcomes.
+public record AlertClassification(
+    AlertCategory Category,
+    string Description
+);
+
+public enum AlertCategory
+{
+    CallOptionEntry,
+    CallOptionExit,
+    PutOptionEntry,
+    PutOptionExit,
+    StockEntry,
+    StockExit,
+    Unclassified
 }
 
 /// <summary>

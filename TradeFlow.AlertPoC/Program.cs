@@ -34,13 +34,20 @@ catch (AlertApiException ex)
 }
 
 Console.WriteLine($"\n[INFO] Alerts received: {alerts.Count}");
+
+// Process alerts through normalization and classification steps before output.
+var processed = alerts
+    .Where(AlertNormalizer.IsProcessable) // Filter out any alerts missing required properties
+    .Select(AlertNormalizer.Normalize)   // Normalize remaining alerts for consistent downstream processing
+    .Select(a => (Alert: a, Classification: AlertClassifier.Classify(a))) // Classify each alert for enriched output
+    .ToList();
+
+Console.WriteLine($"[INFO] Processable: {processed.Count} / {alerts.Count}");
 Console.WriteLine(new string('─', 60));
 
 // Cap at 5 for POC readability — the full pipeline will persist all records
-foreach (var alert in alerts.Take(5))
+foreach (var (alert, classification) in processed.Take(5))
 {
-    var classification = AlertClassifier.Classify(alert);
-
     // Color-code the console output based on alert category for quick visual scanning.
     Console.ForegroundColor = classification.Category switch
     {
@@ -70,7 +77,7 @@ foreach (var alert in alerts.Take(5))
 }
 
 // Summarize entry vs exit counts at the end for a quick sanity check on classification distribution.
-var entries = alerts.Count(a => AlertClassifier.IsEntry(AlertClassifier.Classify(a)));
-Console.WriteLine($"\n[INFO] Entries: {entries} | Exits: {alerts.Count - entries}");
+var entries = processed.Count(p => AlertClassifier.IsEntry(p.Classification));
+Console.WriteLine($"\n[INFO] Entries: {entries} | Exits: {processed.Count - entries}");
 
 return 0;
