@@ -39,7 +39,23 @@ Console.WriteLine(new string('─', 60));
 // Cap at 5 for POC readability — the full pipeline will persist all records
 foreach (var alert in alerts.Take(5))
 {
-    Console.ForegroundColor = ConsoleColor.Cyan;
+    var classification = AlertClassifier.Classify(alert);
+
+    // Color-code the console output based on alert category for quick visual scanning.
+    Console.ForegroundColor = classification.Category switch
+    {
+        AlertCategory.CallOptionEntry or
+        AlertCategory.PutOptionEntry or
+        AlertCategory.StockEntry => ConsoleColor.Green,
+        AlertCategory.CallOptionExit or
+        AlertCategory.PutOptionExit or
+        AlertCategory.StockExit => ConsoleColor.Yellow,
+        _ => ConsoleColor.Gray
+    };
+
+    Console.WriteLine($" [{classification.Description}]");
+    Console.ResetColor();
+
     Console.WriteLine($"  ID        : {alert.Id}");
     Console.ResetColor();
     Console.WriteLine($"  Trader    : {alert.UserName}");
@@ -52,5 +68,9 @@ foreach (var alert in alerts.Take(5))
     Console.WriteLine($"  Status    : {alert.Status}");
     Console.WriteLine(new string('─', 60));
 }
+
+// Summarize entry vs exit counts at the end for a quick sanity check on classification distribution.
+var entries = alerts.Count(a => AlertClassifier.IsEntry(AlertClassifier.Classify(a)));
+Console.WriteLine($"\n[INFO] Entries: {entries} | Exits: {alerts.Count - entries}");
 
 return 0;
