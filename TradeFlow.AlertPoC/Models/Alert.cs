@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace TradeFlow.AlertPoC.Models;
 
 // Flexible response wrapper — Xtrades hasn't published a formal API contract,

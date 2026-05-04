@@ -1,5 +1,3 @@
-using TradeFlow.AlertPoC.Models;
-
 namespace TradeFlow.AlertPoC.Services;
 
 /// <summary>

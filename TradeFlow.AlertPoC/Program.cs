@@ -1,7 +1,4 @@
-﻿using TradeFlow.AlertPoC.Models;
-using TradeFlow.AlertPoC.Services;
-
-// Token is injected via environment variable — never hardcoded or logged.
+﻿// Token is injected via environment variable — never hardcoded or logged.
 // In the Worker Service this will be read through IOptions with validation
 // at startup so the app fails fast with a clear message rather than at
 // the first API call.

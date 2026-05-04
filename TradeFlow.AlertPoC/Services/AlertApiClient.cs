@@ -1,6 +1,5 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
-using TradeFlow.AlertPoC.Models;
 
 namespace TradeFlow.AlertPoC.Services;
 

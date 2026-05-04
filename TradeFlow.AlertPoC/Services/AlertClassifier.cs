@@ -1,7 +1,3 @@
-using System.Net.Mail;
-using TradeFlow.AlertPoC.Models;
-using TradeFlow.AlertPoC.Services;
-
 namespace TradeFlow.AlertPoC.Services;
 
 // Represents the normalized category of an alert after classification.
