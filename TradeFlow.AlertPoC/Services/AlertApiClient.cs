@@ -25,6 +25,10 @@ public class AlertApiClient
 
     public AlertApiClient(string token)
     {
+        // Defensive check - fail loudly at construction rather than getting
+        // a cryptic 401 on the first request with no indication why
+        ArgumentException.ThrowIfNullOrWhiteSpace(token, nameof(token));
+
         _httpClient = new HttpClient();
 
         // Bearer token auth — Xtrades uses JWT issued by their frontend.
