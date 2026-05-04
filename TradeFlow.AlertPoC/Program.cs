@@ -42,8 +42,8 @@ var processed = alerts
 Console.WriteLine($"[INFO] Processable: {processed.Count} / {alerts.Count}");
 Console.WriteLine(new string('─', 60));
 
-// Cap at 5 for POC readability — the full pipeline will persist all records
-foreach (var (alert, classification) in processed.Take(5))
+// Cap at 10 for POC readability — the full pipeline will persist all records
+foreach (var (alert, classification) in processed.Take(10))
 {
     // Color-code the console output based on alert category for quick visual scanning.
     Console.ForegroundColor = classification.Category switch
