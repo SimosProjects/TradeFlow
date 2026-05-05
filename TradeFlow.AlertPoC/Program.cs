@@ -14,6 +14,8 @@ if (string.IsNullOrWhiteSpace(token))
 Console.WriteLine($"[INFO] Token loaded ({token.Length} chars)");
 
 var client = new AlertApiClient(token);
+var normalizer = new AlertNormalizer();
+
 List<Alert> alerts;
 
 try
@@ -34,8 +36,8 @@ Console.WriteLine($"\n[INFO] Alerts received: {alerts.Count}");
 
 // Process alerts through normalization and classification steps before output.
 var processed = alerts
-    .Where(AlertNormalizer.IsProcessable) // Filter out any alerts missing required properties
-    .Select(AlertNormalizer.Normalize)   // Normalize remaining alerts for consistent downstream processing
+    .Where(normalizer.IsProcessable) // Filter out any alerts missing required properties
+    .Select(normalizer.Normalize)   // Normalize remaining alerts for consistent downstream processing
     .Select(a => (Alert: a, Classification: AlertClassifier.Classify(a))) // Classify each alert for enriched output
     .ToList();
 
@@ -57,24 +59,32 @@ foreach (var (alert, classification) in processed.Take(10))
         _ => ConsoleColor.Gray
     };
 
-    Console.WriteLine($" [{classification.Description}]");
+    Console.WriteLine($"  [{classification.Description}]");
     Console.ResetColor();
 
-    Console.WriteLine($"  ID        : {alert.Id}");
-    Console.ResetColor();
-    Console.WriteLine($"  Trader    : {alert.UserName}");
-    Console.WriteLine($"  Symbol    : {alert.Symbol}");
-    Console.WriteLine($"  Side      : {alert.Side}");
-    Console.WriteLine($"  Direction : {alert.Direction}");
-    Console.WriteLine($"  Strike    : {alert.Strike}");
-    Console.WriteLine($"  Expiry    : {alert.Expiration}");
-    Console.WriteLine($"  Price     : {alert.ActualPriceAtTimeOfAlert}");
-    Console.WriteLine($"  Status    : {alert.Status}");
+    Console.WriteLine($"  ID          : {alert.Id}");
+    Console.WriteLine($"  Trader      : {alert.UserName}  (xScore: {alert.XScore})");
+    Console.WriteLine($"  Symbol      : {alert.Symbol}");
+    Console.WriteLine($"  Side        : {alert.Side}  |  Risk: {alert.Risk}");
+    Console.WriteLine($"  Direction   : {alert.Direction}");
+    Console.WriteLine($"  Strike      : {alert.Strike?.ToString() ?? "—"}");
+    Console.WriteLine($"  Expiry      : {alert.Expiration ?? "—"}");
+    Console.WriteLine($"  Contract    : {alert.ContractDescription ?? "—"}");
+    Console.WriteLine($"  Entry Price : {alert.PricePaid}");
+    Console.WriteLine($"  Last Price  : {alert.LastCheckedPrice}");
+    Console.WriteLine($"  Result      : {alert.Result}  ({alert.LastKnownPercentProfit:P2})");
+    Console.WriteLine($"  Length      : {alert.FormattedLength}");
+    Console.WriteLine($"  Message     : {alert.OriginalMessage}");
     Console.WriteLine(new string('─', 60));
 }
 
-// Summarize entry vs exit counts at the end for a quick sanity check on classification distribution.
+// Summarize by result — quick sanity check on the data coming back
 var entries = processed.Count(p => AlertClassifier.IsEntry(p.Classification));
-Console.WriteLine($"\n[INFO] Entries: {entries} | Exits: {processed.Count - entries}");
+var wins    = processed.Count(p => p.Alert.Result == "win");
+var losses  = processed.Count(p => p.Alert.Result == "loss");
+var active  = processed.Count(p => p.Alert.Result == "inProgress");
+
+Console.WriteLine($"\n[INFO] Entries : {entries}  |  Exits: {processed.Count - entries}");
+Console.WriteLine($"[INFO] Wins    : {wins}  |  Losses: {losses}  |  Active: {active}");
 
 return 0;

@@ -3,13 +3,13 @@ namespace TradeFlow.AlertPoC.Services;
 /// <summary>
 /// Service responsible for normalizing raw alerts from the API into a consistent format for downstream processing.
 /// </summary>
-public static class AlertNormalizer
+public class AlertNormalizer
 {
     /// <summary>
     /// Normalizes an alert by trimming whitespace and standardizing casing on key string properties.
     /// This helps downstream classification and deduplication logic be more robust to minor variations in the API response.
     /// </summary>
-    public static Alert Normalize(Alert alert) => alert with
+    public Alert Normalize(Alert alert) => alert with
     {
         // Normalize symbol to uppercase for consistent downstream processing
         Symbol = alert.Symbol?.ToUpperInvariant(),
@@ -24,7 +24,10 @@ public static class AlertNormalizer
         Direction = alert.Direction?.ToLowerInvariant(),
 
         // Trim whitespace from the original message to clean up any formatting inconsistencies
-        OriginalMessage = alert.OriginalMessage?.Trim()
+        OriginalMessage = alert.OriginalMessage?.Trim(),
+
+        // Trim whitespace from the original exit message as well
+        OriginalExitMessage = alert.OriginalExitMessage?.Trim()
     };
 
     /// <summary>
@@ -32,7 +35,7 @@ public static class AlertNormalizer
     /// </summary>
     /// <param name="alert"></param>
     /// <returns></returns>
-    public static bool IsProcessable(Alert alert) =>
+    public bool IsProcessable(Alert alert) =>
         alert.Id is not null &&
         alert.Symbol is not null &&
         alert.Side is not null &&
