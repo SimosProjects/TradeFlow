@@ -16,11 +16,19 @@ Console.WriteLine($"[INFO] Token loaded ({token.Length} chars)");
 var client = new AlertApiClient(token);
 var normalizer = new AlertNormalizer();
 
+using var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true; // prevent the process from terminating immediately
+    cts.Cancel();    // signal our token so async operations can wind down cleanly
+    Console.WriteLine("\n[INFO] Cancellation requested — shutting down...");
+};
+
 List<Alert> alerts;
 
 try
 {
-    alerts = await client.GetAlertsAsync();
+    alerts = await client.GetAlertsAsync(cts.Token);
 }
 catch (AlertApiException ex)
 {

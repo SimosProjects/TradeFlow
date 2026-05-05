@@ -45,29 +45,31 @@ public class AlertApiClient
     /// Fetches the most recent alerts from the Xtrades API.
     /// Throws <see cref="AlertApiException"/> for any network, HTTP, or
     /// deserialization failure so callers don't need to know the HTTP details.
+    /// Pass a CancellationToken to support cooperative cancellation —
+    /// the token is propagated to every async operation in the chain.
     /// </summary>
-    public async Task<List<Alert>> GetAlertsAsync()
+    public async Task<List<Alert>> GetAlertsAsync(CancellationToken cancellationToken)
     {
         HttpResponseMessage response;
 
         try
         {
-            response = await _httpClient.GetAsync(AlertsUrl);
+            response = await _httpClient.GetAsync(AlertsUrl, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
             // Covers DNS failure, refused connection, transport errors
             throw new AlertApiException($"Network error: {ex.Message}", ex);
         }
-        catch (TaskCanceledException)
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             // HttpClient fires TaskCanceledException on timeout, not TimeoutException
-            throw new AlertApiException("Request timed out.");
+            throw new AlertApiException("Request timed out.", ex);
         }
 
         if (!response.IsSuccessStatusCode)
         {
-            var body = await response.Content.ReadAsStringAsync();
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new AlertApiException(
                 $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
         }
