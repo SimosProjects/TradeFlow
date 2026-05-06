@@ -8,7 +8,7 @@ namespace TradeFlow.AlertPoC.Services;
 /// Responsibility: fetch and deserialize alerts only.
 /// Risk filtering, deduplication, and execution live in separate services.
 /// </summary>
-public class AlertApiClient
+public class AlertApiClient : IAlertApiClient
 {
     private readonly HttpClient _httpClient;
 
@@ -16,7 +16,7 @@ public class AlertApiClient
     // IOptions<XtradesOptions> so values are configurable per environment.
     private const string AlertsUrl =
         "https://app.xtrades.net/api/v2/alerts" +
-        "?DateSpec=ThreeDays" +
+        "?DateSpec=Today" +
         "&Page=1" +
         "&PageSize=10" +
         "&OrderBy=alertOpenClosedDateEpoch%20desc" +

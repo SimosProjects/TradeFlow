@@ -3,7 +3,7 @@ namespace TradeFlow.AlertPoC.Services;
 /// <summary>
 /// Service responsible for normalizing raw alerts from the API into a consistent format for downstream processing.
 /// </summary>
-public class AlertNormalizer
+public class AlertNormalizer : IAlertNormalizer
 {
     /// <summary>
     /// Normalizes an alert by trimming whitespace and standardizing casing on key string properties.
