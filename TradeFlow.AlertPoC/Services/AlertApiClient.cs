@@ -19,7 +19,8 @@ public class AlertApiClient : IAlertApiClient
         "?DateSpec=Today" +
         "&Page=1" +
         "&PageSize=10" +
-        "&OrderBy=alertOpenClosedDateEpoch%20desc" +
+        "&OrderBy=TimeOfEntryAlertEpoch%20desc" +
+        "&Side=bto" +
         "&AlertType=all";
 
     public AlertApiClient(string token)

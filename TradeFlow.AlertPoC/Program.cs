@@ -2,6 +2,8 @@
 // In the Worker Service this will be read through IOptions with validation
 // at startup so the app fails fast with a clear message rather than at
 // the first API call.
+using TradeFlow.AlertPoC.RiskEngine;
+
 var token = Environment.GetEnvironmentVariable("XTRADES_TOKEN");
 if (string.IsNullOrWhiteSpace(token))
 {
@@ -16,6 +18,13 @@ Console.WriteLine($"[INFO] Token loaded ({token.Length} chars)");
 var client = new AlertApiClient(token);
 var normalizer = new AlertNormalizer();
 
+var riskEngine = new RiskEngineService([
+   new EntryOnlyRule(),
+   new NoLottoRule(),
+   new MinXScoreRule(minimumScore: 60.0),
+   new ApprovedTraderRule([ "Fibonaccizer", "Theo", "Avalace" ])
+]);
+    
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
@@ -42,18 +51,24 @@ catch (AlertApiException ex)
 
 Console.WriteLine($"\n[INFO] Alerts received: {alerts.Count}");
 
-// Process alerts through normalization and classification steps before output.
+// Pipeline: validate -> normalize -> classify -> risk evaluate
 var processed = alerts
     .Where(normalizer.IsProcessable) // Filter out any alerts missing required properties
     .Select(normalizer.Normalize)   // Normalize remaining alerts for consistent downstream processing
-    .Select(a => (Alert: a, Classification: AlertClassifier.Classify(a))) // Classify each alert for enriched output
+    .Select(a => (
+        Alert: a, 
+        Classification: AlertClassifier.Classify(a),
+        RiskResult: riskEngine.Evalute(a)
+        ))
     .ToList();
 
 Console.WriteLine($"[INFO] Processable: {processed.Count} / {alerts.Count}");
+Console.WriteLine($"[INFO] Approved: {processed.Count(p => p.RiskResult.Approved)}");
+Console.WriteLine($"[INFO] Rejected: {processed.Count(p => !p.RiskResult.Approved)}\n");
 Console.WriteLine(new string('─', 60));
 
 // Cap at 10 for POC readability — the full pipeline will persist all records
-foreach (var (alert, classification) in processed.Take(10))
+foreach (var (alert, classification, riskResult) in processed.Take(10))
 {
     // Color-code the console output based on alert category for quick visual scanning.
     Console.ForegroundColor = classification.Category switch
@@ -67,8 +82,18 @@ foreach (var (alert, classification) in processed.Take(10))
         _ => ConsoleColor.Gray
     };
 
-    Console.WriteLine($"  [{classification.Description}]");
+    Console.WriteLine($"  [{classification.Description}] " + $"{(riskResult.Approved ? " APPROVED" : $" REJECTED")}");
     Console.ResetColor();
+
+    if (!riskResult.Approved)
+    {
+        // Show rejection reason so we can verify rules are firing correctly
+        Console.WriteLine($" Reason : {riskResult.Reason}");
+        Console.WriteLine($" Trader : {alert.UserName}");
+        Console.WriteLine($" Symbol : {alert.Symbol}");
+        Console.WriteLine(new string('─', 60));
+        continue; // Skip details for rejected alerts to reduce noise in the POC output
+    }
 
     Console.WriteLine($"  ID          : {alert.Id}");
     Console.WriteLine($"  Trader      : {alert.UserName}  (xScore: {alert.XScore})");
