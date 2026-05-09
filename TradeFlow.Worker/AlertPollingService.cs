@@ -9,25 +9,27 @@ public class AlertPollingService : BackgroundService
     private readonly IAlertApiClient _client;
     private readonly IAlertNormalizer _normalizer;
     private readonly RiskEngineService _riskEngine;
+    private readonly PollingOptions _options;
     private readonly ILogger<AlertPollingService> _logger;
-
-    // Poll interval for checking new alerts
-    private static readonly TimeSpan PollingInterval = TimeSpan.FromSeconds(30);
 
     public AlertPollingService(
         IAlertApiClient client,
         IAlertNormalizer normalizer,
         RiskEngineService riskEngine,
+        IOptions<PollingOptions> options,
         ILogger<AlertPollingService> logger)
     {
         _client = client;
         _normalizer = normalizer;
         _riskEngine = riskEngine;
+        _options = options.Value;
         _logger = logger;
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Alert polling service started.");
+        _logger.LogInformation(
+            "Alert polling service started - interval: {Interval}s",
+            _options.IntervalSeconds);
 
         try
         {
@@ -35,18 +37,20 @@ public class AlertPollingService : BackgroundService
             {
                 await PollOnceAsync(stoppingToken);
 
-                    await Task.Delay(PollingInterval, stoppingToken);
-                }
+                await Task.Delay(
+                    TimeSpan.FromSeconds(_options.IntervalSeconds),
+                    stoppingToken);
             }
-            catch (OperationCanceledException)
-            {
-                // Expected on shutdown — not an error
-            }
-            finally
-            {
-                // Guaranteed to run whether cancelled or not
-                _logger.LogInformation("Alert polling service stopped.");
-            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected on shutdown — not an error
+        }
+        finally
+        {
+            // Guaranteed to run whether cancelled or not
+            _logger.LogInformation("Alert polling service stopped.");
+        }
     }
 
     /// <summary>
@@ -94,7 +98,10 @@ public class AlertPollingService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Poll cycle failed - will retry in {Interval}s.", PollingInterval.TotalSeconds);
+            _logger.LogError(
+                ex, 
+                "Poll cycle failed - will retry in {Interval}s.", 
+                _options.IntervalSeconds);
         }
     }
 }
