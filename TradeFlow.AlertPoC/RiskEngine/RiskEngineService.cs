@@ -17,7 +17,7 @@ public class RiskEngineService
     /// </summary>
     /// <param name="alert"></param>
     /// <returns></returns>
-    public RiskResult Evalute(Alert alert)
+    public RiskResult Evaluate(Alert alert)
     {
         foreach (var rule in _rules)
         {

@@ -1,8 +1,4 @@
-﻿// Token is injected via environment variable — never hardcoded or logged.
-// In the Worker Service this will be read through IOptions with validation
-// at startup so the app fails fast with a clear message rather than at
-// the first API call.
-using TradeFlow.AlertPoC.RiskEngine;
+﻿using TradeFlow.AlertPoC.RiskEngine;
 
 var token = Environment.GetEnvironmentVariable("XTRADES_TOKEN");
 if (string.IsNullOrWhiteSpace(token))
@@ -58,7 +54,7 @@ var processed = alerts
     .Select(a => (
         Alert: a, 
         Classification: AlertClassifier.Classify(a),
-        RiskResult: riskEngine.Evalute(a)
+        RiskResult: riskEngine.Evaluate(a)
         ))
     .ToList();
 
