@@ -1,8 +1,4 @@
 using TradeFlow.Worker;
-using TradeFlow.AlertPoC.RiskEngine;
-using TradeFlow.AlertPoC.Services;
-using TradeFlow.Worker.Configuration;
-using System.ComponentModel.DataAnnotations;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -30,6 +26,18 @@ builder.Services
     .Bind(builder.Configuration.GetSection(PollingOptions.SectionName))
     .ValidateDataAnnotations()
     .ValidateOnStart();
+
+// -- Database --
+
+// Get the connection string from configuration, with a fallback to throw an exception if not set
+var connectionString = builder.Configuration.GetConnectionString("TradeFlow")
+    ?? throw new InvalidOperationException(
+        "TradeFlow connection string is not configured.");
+
+// Register the DbContext with a scoped lifetime, which is appropriate for database contexts
+builder.Services.AddDbContext<TradeFlowDbContext>(options =>
+    options.UseNpgsql(connectionString),
+    ServiceLifetime.Scoped);
 
 // -- Register services --
 
