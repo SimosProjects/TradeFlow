@@ -70,6 +70,9 @@ builder.Services.AddSingleton<RiskEngineService>(sp =>
     return new RiskEngineService(rules);
 });
 
+// Alert repository is registered as Scoped since it depends on the DbContext which is also Scoped
+builder.Services.AddScoped<IAlertRepository, AlertRepository>();
+
 // Register the alert polling service as a hosted service that runs in the background
 builder.Services.AddHostedService<AlertPollingService>();
 

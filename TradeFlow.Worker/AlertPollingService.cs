@@ -9,6 +9,7 @@ public class AlertPollingService : BackgroundService
     private readonly IAlertApiClient _client;
     private readonly IAlertNormalizer _normalizer;
     private readonly RiskEngineService _riskEngine;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly PollingOptions _options;
     private readonly ILogger<AlertPollingService> _logger;
 
@@ -16,12 +17,14 @@ public class AlertPollingService : BackgroundService
         IAlertApiClient client,
         IAlertNormalizer normalizer,
         RiskEngineService riskEngine,
+        IServiceScopeFactory scopeFactory,
         IOptions<PollingOptions> options,
         ILogger<AlertPollingService> logger)
     {
         _client = client;
         _normalizer = normalizer;
         _riskEngine = riskEngine;
+        _scopeFactory = scopeFactory;
         _options = options.Value;
         _logger = logger;
     }
@@ -63,11 +66,35 @@ public class AlertPollingService : BackgroundService
     {
         try
         {
+            // Create a new scope for this poll cycle to get a fresh instance of the repository
+            using var scope = _scopeFactory.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IAlertRepository>();
+    
             var alerts = await _client.GetAlertsAsync(stoppingToken);
-            
+
             _logger.LogInformation("Fetched {Count} alerts from API.", alerts.Count);
 
-            var processed = alerts
+            // One query to the database to get all existing IDs, then filter in memory - more efficient than querying for each alert
+            var incomingIds = alerts
+                .Where(a => a.Id is not null)
+                .Select(a => a.Id!)
+                .ToList();
+            
+            var existingIds = await repository.GetExistingAlertIdsAsync(incomingIds, stoppingToken);
+
+            // Filter out any alerts that already exist in the database based on their ID
+            var newAlerts = alerts
+                .Where(a => a.Id is not null && !existingIds.Contains(a.Id!))
+                .ToList();
+
+            _logger.LogInformation("New alerts after deduplication: {New} / {Total}", newAlerts.Count, alerts.Count);
+
+            if (newAlerts.Count == 0)
+            {
+                return; // No new alerts to process
+            }
+
+            var processed = newAlerts
                 .Where(_normalizer.IsProcessable)
                 .Select(_normalizer.Normalize)
                 .Select(alerts => (
@@ -91,6 +118,10 @@ public class AlertPollingService : BackgroundService
                     alert.UserName,
                     alert.XScore);
             }
+
+            // Save both approved and rejected alerts with their risk evaluation so we can audit why alerts were filtered out
+            var entities = processed.Select(p => AlertMapper.ToEntity(p.Alert, p.RiskResult)).ToList();
+            await repository.SaveManyAsync(entities, stoppingToken);
         }
         catch (OperationCanceledException)
         {
