@@ -36,8 +36,11 @@ var connectionString = builder.Configuration.GetConnectionString("TradeFlow")
 
 // Register the DbContext with a scoped lifetime, which is appropriate for database contexts
 builder.Services.AddDbContext<TradeFlowDbContext>(options =>
-    options.UseNpgsql(connectionString),
-    ServiceLifetime.Scoped);
+{
+    options.UseNpgsql(connectionString);
+    options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking); // Use NoTracking for read-only operations to improve performance
+},
+ServiceLifetime.Scoped);
 
 // -- Register services --
 
