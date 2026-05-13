@@ -8,6 +8,15 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
 
+// Add output caching
+builder.Services.AddOutputCache(options =>
+{
+    options.AddPolicy("alerts", builder =>
+        builder
+            .Expire(TimeSpan.FromSeconds(30))
+            .SetVaryByQuery("page", "pageSize", "userName", "symbol", "side", "riskApproved"));
+});
+
 // Configure database connection
 var connectionString = builder.Configuration.GetConnectionString("TradeFlow")
     ?? throw new InvalidOperationException(
@@ -36,6 +45,8 @@ else
 }
 
 app.UseHttpsRedirection();
+
+app.UseOutputCache();
 
 app.MapAlertEndpoints();
 

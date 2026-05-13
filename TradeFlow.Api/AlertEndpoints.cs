@@ -16,7 +16,8 @@ public static class AlertEndpoints
 
         group.MapGet("/", GetAlerts)
             .WithName("GetAlerts")
-            .WithSummary("Returns a paginated list of ingested alerts.");
+            .WithSummary("Returns a paginated list of ingested alerts.")
+            .CacheOutput("alerts");
 
         group.MapGet("/{id}", GetAlertById)
             .WithName("GetAlertById")
