@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using TradeFlow.Worker.Metrics;
+
 namespace TradeFlow.Worker;
 
 /// <summary>
@@ -12,6 +15,7 @@ public class AlertPollingService : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly PollingOptions _options;
     private readonly ILogger<AlertPollingService> _logger;
+    private readonly AlertMetrics _metrics;
 
     public AlertPollingService(
         IAlertApiClient client,
@@ -19,7 +23,8 @@ public class AlertPollingService : BackgroundService
         RiskEngineService riskEngine,
         IServiceScopeFactory scopeFactory,
         IOptions<PollingOptions> options,
-        ILogger<AlertPollingService> logger)
+        ILogger<AlertPollingService> logger,
+        AlertMetrics metrics)
     {
         _client = client;
         _normalizer = normalizer;
@@ -27,6 +32,7 @@ public class AlertPollingService : BackgroundService
         _scopeFactory = scopeFactory;
         _options = options.Value;
         _logger = logger;
+        _metrics = metrics;
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -64,6 +70,8 @@ public class AlertPollingService : BackgroundService
     /// <returns></returns>
     private async Task PollOnceAsync(CancellationToken stoppingToken)
     {
+        var sw = Stopwatch.StartNew();
+        
         try
         {
             // Create a new scope for this poll cycle to get a fresh instance of the repository
@@ -71,6 +79,8 @@ public class AlertPollingService : BackgroundService
             var repository = scope.ServiceProvider.GetRequiredService<IAlertRepository>();
     
             var alerts = await _client.GetAlertsAsync(stoppingToken);
+
+            _metrics.AlertsFetched.Add(alerts.Count);
 
             _logger.LogInformation("Fetched {Count} alerts from API.", alerts.Count);
 
@@ -86,6 +96,8 @@ public class AlertPollingService : BackgroundService
             var newAlerts = alerts
                 .Where(a => a.Id is not null && !existingIds.Contains(a.Id!))
                 .ToList();
+
+            _metrics.AlertsNew.Add(newAlerts.Count);
 
             _logger.LogInformation("New alerts after deduplication: {New} / {Total}", newAlerts.Count, alerts.Count);
 
@@ -107,6 +119,9 @@ public class AlertPollingService : BackgroundService
             var approved = processed.Where(p => p.RiskResult.Approved).ToList();
             var rejected = processed.Where(p => !p.RiskResult.Approved).ToList();
 
+            _metrics.AlertsApproved.Add(approved.Count);
+            _metrics.AlertsRejected.Add(rejected.Count);
+
             _logger.LogInformation("Pipeline complete - Approved: {Approved}, Rejected: {Rejected}",
                 approved.Count, rejected.Count);
 
@@ -119,6 +134,10 @@ public class AlertPollingService : BackgroundService
                     alert.XScore);
             }
 
+            sw.Stop();
+            _metrics.PollDurationMs.Record(sw.ElapsedMilliseconds,
+                new TagList { { "result", "success" } });
+
             // Save both approved and rejected alerts with their risk evaluation so we can audit why alerts were filtered out
             var entities = processed.Select(p => AlertMapper.ToEntity(p.Alert, p.RiskResult)).ToList();
             await repository.SaveManyAsync(entities, stoppingToken);
@@ -129,6 +148,10 @@ public class AlertPollingService : BackgroundService
         }
         catch (Exception ex)
         {
+            sw.Stop();
+            _metrics.PollDurationMs.Record(sw.ElapsedMilliseconds,
+                new TagList { { "result", "error" } });
+                
             _logger.LogError(
                 ex, 
                 "Poll cycle failed - will retry in {Interval}s.", 

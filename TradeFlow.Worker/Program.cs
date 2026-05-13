@@ -1,17 +1,12 @@
 using TradeFlow.Worker;
+using TradeFlow.Worker.Metrics;
 
 AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
-Log.Logger = new LoggerConfiguration()
-    .ReadFrom.Configuration(new ConfigurationBuilder()
-        .AddJsonFile("appsettings.json")
-        .AddEnvironmentVariables()
-        .Build())
-    .Enrich.FromLogContext()
-    .CreateLogger();
-
 var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddSerilog();
+builder.Services.AddSerilog((services, config) =>
+    config.ReadFrom.Configuration(builder.Configuration)
+          .Enrich.FromLogContext());
 
 // -- Configuration --
 
@@ -60,6 +55,9 @@ builder.Services.AddSingleton<IAlertApiClient>(new AlertApiClient(token));
 
 // Normalizer is registered as a Singleton since it is stateless and can be shared across the application
 builder.Services.AddSingleton<IAlertNormalizer, AlertNormalizer>();
+
+// Metrics — Singleton, Meter is thread-safe
+builder.Services.AddSingleton<AlertMetrics>();
 
 // Risk rules - read from options
 builder.Services.AddSingleton<RiskEngineService>(sp =>
