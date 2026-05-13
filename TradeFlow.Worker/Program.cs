@@ -1,6 +1,17 @@
 using TradeFlow.Worker;
 
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(new ConfigurationBuilder()
+        .AddJsonFile("appsettings.json")
+        .AddEnvironmentVariables()
+        .Build())
+    .Enrich.FromLogContext()
+    .CreateLogger();
+
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddSerilog();
 
 // -- Configuration --
 
@@ -78,7 +89,7 @@ builder.Services.AddHostedService<AlertPollingService>();
 
 // SignalR listener, live entry alerts from Xtrades feed
 // Runs alongside the REST polling service
-builder.Services.AddHostedService<SignalRListenerService>();
+//builder.Services.AddHostedService<SignalRListenerService>();
 
 var host = builder.Build();
 host.Run();
