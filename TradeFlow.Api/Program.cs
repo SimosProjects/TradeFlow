@@ -31,6 +31,10 @@ var connectionString = builder.Configuration.GetConnectionString("TradeFlow")
     ?? throw new InvalidOperationException(
         "TradeFlow connection string is not configured.");
 
+// Health checks
+builder.Services.AddHealthChecks()
+    .AddNpgSql(connectionString, name: "postgresql");
+
 builder.Services.AddDbContext<TradeFlowDbContext>(options =>
 {
     options.UseNpgsql(connectionString);
@@ -56,6 +60,12 @@ else
 app.UseHttpsRedirection();
 
 app.UseOutputCache();
+
+app.MapHealthChecks("/health/live");
+app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 
 app.MapAlertEndpoints();
 
