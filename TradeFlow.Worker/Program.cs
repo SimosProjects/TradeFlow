@@ -76,5 +76,9 @@ builder.Services.AddScoped<IAlertRepository, AlertRepository>();
 // Register the alert polling service as a hosted service that runs in the background
 builder.Services.AddHostedService<AlertPollingService>();
 
+// SignalR listener, live entry alerts from Xtrades feed
+// Runs alongside the REST polling service
+builder.Services.AddHostedService<SignalRListenerService>();
+
 var host = builder.Build();
 host.Run();
