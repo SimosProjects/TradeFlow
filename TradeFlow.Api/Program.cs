@@ -1,11 +1,12 @@
-using Microsoft.EntityFrameworkCore;
-using TradeFlow.Worker.Data;
+
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddProblemDetails();
 
 // Configure database connection
 var connectionString = builder.Configuration.GetConnectionString("TradeFlow")
@@ -20,6 +21,7 @@ builder.Services.AddDbContext<TradeFlowDbContext>(options =>
 
 builder.Services.AddScoped<IAlertRepository, AlertRepository>();
 
+// Pipeline
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -34,5 +36,7 @@ else
 }
 
 app.UseHttpsRedirection();
+
+app.MapAlertEndpoints();
 
 app.Run();
