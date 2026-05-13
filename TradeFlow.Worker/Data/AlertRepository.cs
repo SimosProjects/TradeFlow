@@ -41,14 +41,19 @@ public class AlertRepository : IAlertRepository
     }
 
     /// <inheritdoc/>
-    public async Task<HashSet<string>> GetExistingAlertIdsAsync(IEnumerable<string> alertIds, CancellationToken cancellationToken = default)
+    public async Task<HashSet<string>> GetExistingAlertIdsAsync(
+        IEnumerable<string> alertIds, CancellationToken cancellationToken = default)
     {
-        var idSet = alertIds.ToHashSet();
-        var existingIds = await _dbContext.Alerts
-            .Where(a => idSet.Contains(a.Id))
+        var ids = alertIds.ToList();
+
+        if (ids.Count == 0)
+            return [];
+
+        var existing = await _dbContext.Alerts
+            .Where(a => ids.Contains(a.Id))
             .Select(a => a.Id)
             .ToListAsync(cancellationToken);
 
-        return existingIds.ToHashSet();
+        return existing.ToHashSet();
     }
 }
