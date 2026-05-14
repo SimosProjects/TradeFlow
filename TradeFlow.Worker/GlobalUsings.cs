@@ -6,3 +6,5 @@ global using Microsoft.Extensions.Options;
 global using Microsoft.EntityFrameworkCore;
 global using TradeFlow.Worker.Data;
 global using Serilog;
+global using System.Net.Http.Headers;
+global using TradeFlow.Worker.Services; 

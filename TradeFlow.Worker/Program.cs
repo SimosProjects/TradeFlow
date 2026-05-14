@@ -50,8 +50,20 @@ ServiceLifetime.Scoped);
 
 // -- Register services --
 
-// HTTP client for making API calls, registered as a Singleton as its designed to be shared
-builder.Services.AddSingleton<IAlertApiClient>(new AlertApiClient(token));
+// Register as a typed client
+builder.Services.AddHttpClient<IAlertApiClient, TradeFlow.Worker.Services.AlertApiClient>(client =>
+{
+    client.BaseAddress = new Uri("https://app.xtrades.net");
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Bearer", token);
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
+    client.Timeout = TimeSpan.FromSeconds(100);
+})
+.AddStandardResilienceHandler(options =>
+{
+    options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(15);
+    options.Retry.MaxRetryAttempts = 3;
+});
 
 // Normalizer is registered as a Singleton since it is stateless and can be shared across the application
 builder.Services.AddSingleton<IAlertNormalizer, AlertNormalizer>();
