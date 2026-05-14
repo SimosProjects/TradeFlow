@@ -1,33 +1,39 @@
 using Microsoft.AspNetCore.SignalR.Client;
+using System.Net.Http.Headers;
+using System.Text.Json;
 using System.Threading.Channels;
 
 namespace TradeFlow.Worker;
 
 /// <summary>
 /// Connects to the Xtrades Azure SignalR feed as a client and receives
-/// live trading alerts in real time. Decouples the SignalR callback
-/// from the processing pipeline using a bounded Channel to handle
-/// burst traffic without blocking the connection.
+/// live trading alerts in real time. Uses a two-step connection flow:
+/// 1. POST /api/v2/signalr/negotiate to get a short-lived SignalR token
+/// 2. Connect to Azure SignalR using that token
+/// Decouples the SignalR callback from the processing pipeline using
+/// a bounded Channel to handle burst traffic without blocking the connection.
 /// </summary>
 public class SignalRListenerService : BackgroundService
 {
-    private const string HubUrl = "https://xtrades-core-prod.service.signalr.net/client";
+    private const string NegotiateUrl =
+        "https://app.xtrades.net/api/v2/signalr/negotiate";
 
-    private const string AlertEventName = "AlertReceived";
+    // Confirmed from browser DevTools inspection
+    private const string AlertEventName   = "newAlert";
+    private const string HubName          = "notification";
 
-    private readonly IAlertNormalizer _normalizer;
-    private readonly RiskEngineService _riskEngine;
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IAlertNormalizer             _normalizer;
+    private readonly RiskEngineService            _riskEngine;
+    private readonly IServiceScopeFactory         _scopeFactory;
     private readonly ILogger<SignalRListenerService> _logger;
-    private readonly string _token;
+    private readonly HttpClient                   _httpClient;
+    private readonly string                       _token;
 
-    // Bounded channel, decouples SignalR callback (fast) from
+    // Bounded channel — decouples SignalR callback (fast) from
     // processing pipeline (slower database operations)
-    // 500 capacity handles burst traffic without blocking the connection
-    private readonly Channel<object> _alertChannel =
-        Channel.CreateBounded<object>(new BoundedChannelOptions(500)
+    private readonly Channel<JsonElement> _alertChannel =
+        Channel.CreateBounded<JsonElement>(new BoundedChannelOptions(500)
         {
-            // Block the writer when full. Better to slow the connection than to drop alerts
             FullMode = BoundedChannelFullMode.Wait
         });
 
@@ -35,7 +41,6 @@ public class SignalRListenerService : BackgroundService
         IAlertNormalizer                 normalizer,
         RiskEngineService                riskEngine,
         IServiceScopeFactory             scopeFactory,
-        IOptions<XtradesOptions>         options,
         ILogger<SignalRListenerService>  logger)
     {
         _normalizer   = normalizer;
@@ -46,14 +51,16 @@ public class SignalRListenerService : BackgroundService
         _token = Environment.GetEnvironmentVariable("XTRADES_TOKEN")
             ?? throw new InvalidOperationException(
                 "XTRADES_TOKEN environment variable is not set.");
+
+        _httpClient = new HttpClient();
+        _httpClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _token);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("SignalR listener service started.");
 
-        // Run the SignalR connection loop and the processing loop concurrently
-        // Both are cancelled by stoppingToken on shutdown
         await Task.WhenAll(
             RunConnectionLoopAsync(stoppingToken),
             RunProcessingLoopAsync(stoppingToken)
@@ -63,68 +70,76 @@ public class SignalRListenerService : BackgroundService
     }
 
     /// <summary>
-    /// Maintains the SignalR connection: connects, handles incoming messages,
-    /// and reconnects with exponential backoff when the connection drops.
+    /// Step 1: POST to Xtrades negotiate endpoint to get a short-lived
+    /// Azure SignalR access token. Step 2: Connect to Azure SignalR using
+    /// that token. Reconnects with exponential backoff on failure.
     /// </summary>
     private async Task RunConnectionLoopAsync(CancellationToken stoppingToken)
     {
+        var attempt = 0;
+
         while (!stoppingToken.IsCancellationRequested)
         {
-            var connection = BuildConnection();
-
-            // Register handler before connecting so no messages are missed
-            connection.On<object>(AlertEventName, async rawAlert =>
-            {
-                _logger.LogDebug(
-                    "SignalR alert received: {Raw}", rawAlert);
-
-                try
-                {
-                    // Write to channel immediately — never block the callback
-                    await _alertChannel.Writer.WriteAsync(
-                        rawAlert, stoppingToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Shutdown — expected
-                }
-            });
-
-            // Log connection state transitions for monitoring
-            connection.Reconnecting += ex =>
-            {
-                _logger.LogWarning(
-                    "SignalR connection lost — reconnecting. Reason: {Reason}",
-                    ex?.Message);
-                return Task.CompletedTask;
-            };
-
-            connection.Reconnected += connectionId =>
-            {
-                _logger.LogInformation(
-                    "SignalR reconnected. ConnectionId: {Id}", connectionId);
-                return Task.CompletedTask;
-            };
-
-            connection.Closed += ex =>
-            {
-                _logger.LogWarning(
-                    "SignalR connection closed. Reason: {Reason}",
-                    ex?.Message ?? "clean close");
-                return Task.CompletedTask;
-            };
-
+            HubConnection? connection = null;
             try
             {
+                // Step 1 — negotiate to get SignalR endpoint + token
+                var (hubUrl, signalRToken) = await NegotiateAsync(stoppingToken);
+
+                // Step 2 — build connection with the short-lived token
+                connection = new HubConnectionBuilder()
+                    .WithUrl(hubUrl, options =>
+                    {
+                        options.AccessTokenProvider =
+                            () => Task.FromResult<string?>(signalRToken);
+                    })
+                    .WithAutomaticReconnect(new ExponentialBackoffRetryPolicy())
+                    .ConfigureLogging(logging =>
+                        logging.SetMinimumLevel(LogLevel.Warning))
+                    .Build();
+
+                // Register for the confirmed alert event name
+                connection.On<JsonElement>(AlertEventName, async alert =>
+                {
+                    _logger.LogDebug("SignalR newAlert received");
+                    try
+                    {
+                        await _alertChannel.Writer.WriteAsync(
+                            alert, stoppingToken);
+                    }
+                    catch (OperationCanceledException) { }
+                });
+
+                connection.Reconnecting += ex =>
+                {
+                    _logger.LogWarning(
+                        "SignalR reconnecting. Reason: {Reason}", ex?.Message);
+                    return Task.CompletedTask;
+                };
+
+                connection.Reconnected += _ =>
+                {
+                    attempt = 0; // reset backoff on successful reconnect
+                    _logger.LogInformation("SignalR reconnected.");
+                    return Task.CompletedTask;
+                };
+
+                connection.Closed += ex =>
+                {
+                    _logger.LogWarning(
+                        "SignalR closed. Reason: {Reason}",
+                        ex?.Message ?? "clean close");
+                    return Task.CompletedTask;
+                };
+
                 await connection.StartAsync(stoppingToken);
+                attempt = 0; // reset on successful connection
 
                 _logger.LogInformation(
-                    "SignalR connected. ConnectionId: {Id}",
-                    connection.ConnectionId);
+                    "SignalR connected. Hub: {Hub}, ConnectionId: {Id}",
+                    HubName, connection.ConnectionId);
 
-                // Wait until the connection closes
-                // HubConnection doesn't have a built-in "wait for close" method
-                // so we poll the state
+                // Wait until disconnected or cancelled
                 while (connection.State != HubConnectionState.Disconnected
                        && !stoppingToken.IsCancellationRequested)
                 {
@@ -133,7 +148,6 @@ public class SignalRListenerService : BackgroundService
             }
             catch (OperationCanceledException)
             {
-                // Shutdown requested — exit the loop
                 break;
             }
             catch (Exception ex)
@@ -143,38 +157,63 @@ public class SignalRListenerService : BackgroundService
             }
             finally
             {
-                await connection.DisposeAsync();
+                if (connection is not null)
+                    await connection.DisposeAsync();
             }
 
             if (stoppingToken.IsCancellationRequested) break;
 
-            // Exponential backoff before reconnecting
-            // WithAutomaticReconnect handles transient drops
-            // This outer loop handles complete connection failures
-            await RetryWithBackoffAsync(stoppingToken);
+            await RetryWithBackoffAsync(attempt++, stoppingToken);
         }
 
-        // Signal the processing loop that no more alerts are coming
         _alertChannel.Writer.Complete();
     }
 
     /// <summary>
+    /// Calls the Xtrades negotiate endpoint to get a short-lived Azure
+    /// SignalR connection URL and access token.
+    /// </summary>
+    private async Task<(string HubUrl, string Token)> NegotiateAsync(
+        CancellationToken cancellationToken)
+    {
+        var response = await _httpClient.PostAsync(
+            NegotiateUrl, null, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                $"SignalR negotiate failed: HTTP {(int)response.StatusCode} — {body}");
+        }
+
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        var doc  = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        // Response contains the Azure SignalR URL and a short-lived token
+        var url   = root.GetProperty("url").GetString()
+            ?? throw new InvalidOperationException("Negotiate response missing 'url'");
+        var token = root.GetProperty("accessToken").GetString()
+            ?? throw new InvalidOperationException("Negotiate response missing 'accessToken'");
+
+        _logger.LogInformation("SignalR negotiate succeeded. Hub URL: {Url}", url);
+
+        return (url, token);
+    }
+
+    /// <summary>
     /// Reads alerts from the channel and runs them through the pipeline.
-    /// Runs concurrently with the connection loop, decoupled via Channel.
     /// </summary>
     private async Task RunProcessingLoopAsync(CancellationToken stoppingToken)
     {
-        await foreach (var rawAlert in
+        await foreach (var alertElement in
             _alertChannel.Reader.ReadAllAsync(stoppingToken))
         {
             try
             {
-                await ProcessRawAlertAsync(rawAlert, stoppingToken);
+                await ProcessAlertAsync(alertElement, stoppingToken);
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 _logger.LogError(ex,
@@ -184,62 +223,64 @@ public class SignalRListenerService : BackgroundService
     }
 
     /// <summary>
-    /// Parses and processes a raw alert from the SignalR feed through
-    /// the normalize → classify → risk evaluate → persist pipeline.
+    /// Deserializes and processes a newAlert event through the full pipeline:
+    /// normalize → classify → risk evaluate → deduplicate → persist.
     /// </summary>
-    private async Task ProcessRawAlertAsync(
-        object rawAlert,
+    private async Task ProcessAlertAsync(
+        JsonElement alertElement,
         CancellationToken stoppingToken)
     {
-        // TODO: deserialize rawAlert to Alert record once message format confirmed
-        // For now log the raw payload so we can inspect the actual format
         _logger.LogInformation(
-            "Processing SignalR alert: {Alert}", rawAlert);
+            "Processing SignalR alert: {Raw}", alertElement.GetRawText());
 
-        // Placeholder — real implementation deserializes and runs the pipeline:
-        // var alert = JsonSerializer.Deserialize<Alert>(rawAlert.ToString()!);
-        // if (alert is null || !_normalizer.IsProcessable(alert)) return;
-        // var normalized   = _normalizer.Normalize(alert);
-        // var classification = AlertClassifier.Classify(normalized);
-        // var riskResult   = _riskEngine.Evaluate(normalized);
-        // using var scope  = _scopeFactory.CreateScope();
-        // var repository   = scope.ServiceProvider
-        //                        .GetRequiredService<IAlertRepository>();
-        // var entity       = AlertMapper.ToEntity(normalized, riskResult);
-        // await repository.SaveManyAsync([entity], stoppingToken);
+        // Payload arrives as a JSON array, take the first element
+        var element = alertElement.ValueKind == JsonValueKind.Array
+            ? alertElement[0]
+            : alertElement;
+
+        // Deserialize to Alert record
+        var alert = JsonSerializer.Deserialize<Alert>(
+            element.GetRawText(),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        if (alert is null)
+        {
+            _logger.LogWarning("SignalR alert deserialized to null — skipping.");
+            return;
+        }
+
+        if (!_normalizer.IsProcessable(alert))
+        {
+            _logger.LogDebug(
+                "SignalR alert not processable (missing required fields) — skipping.");
+            return;
+        }
+
+        var normalized     = _normalizer.Normalize(alert);
+        var classification = AlertClassifier.Classify(normalized);
+        var riskResult     = _riskEngine.Evaluate(normalized);
+
+        _logger.LogInformation(
+            "SignalR alert [{Category}] {Symbol} by {Trader} — {Result}",
+            classification.Category,
+            normalized.Symbol,
+            normalized.UserName,
+            riskResult.Approved ? "APPROVED" : $"REJECTED: {riskResult.Reason}");
+
+        using var scope = _scopeFactory.CreateScope();
+        var repository  = scope.ServiceProvider
+                               .GetRequiredService<IAlertRepository>();
+
+        var entity = AlertMapper.ToEntity(normalized, riskResult);
+        await repository.SaveManyAsync([entity], stoppingToken);
     }
 
-    /// <summary>
-    /// Builds a new HubConnection with JWT auth and automatic reconnect.
-    /// A new connection is built each time the outer loop restarts.
-    /// </summary>
-    private HubConnection BuildConnection() =>
-        new HubConnectionBuilder()
-            .WithUrl(HubUrl, options =>
-            {
-                // Bearer JWT auth, same token used for REST API
-                options.AccessTokenProvider =
-                    () => Task.FromResult<string?>(_token);
-            })
-            .WithAutomaticReconnect(new ExponentialBackoffRetryPolicy())
-            .ConfigureLogging(logging =>
-            {
-                logging.SetMinimumLevel(LogLevel.Warning);
-            })
-            .Build();
-
-    /// <summary>
-    /// Waits with exponential backoff before the outer connection loop retries.
-    /// This handles complete connection failures that WithAutomaticReconnect
-    /// could not recover from.
-    /// </summary>
     private async Task RetryWithBackoffAsync(
-        CancellationToken stoppingToken,
-        int attempt = 0)
+        int attempt, CancellationToken stoppingToken)
     {
         var maxDelay    = TimeSpan.FromSeconds(60);
-        var baseSeconds = Math.Pow(2, Math.Min(attempt, 6)); // cap exponent at 6
-        var jitter      = Random.Shared.NextDouble() * 0.3;  // 0–30% jitter
+        var baseSeconds = Math.Pow(2, Math.Min(attempt, 6));
+        var jitter      = Random.Shared.NextDouble() * 0.3;
         var delay       = TimeSpan.FromSeconds(baseSeconds * (1 + jitter));
 
         if (delay > maxDelay) delay = maxDelay;
@@ -253,7 +294,7 @@ public class SignalRListenerService : BackgroundService
 
 /// <summary>
 /// Exponential backoff with jitter for SignalR automatic reconnect.
-/// Used for transient drops, the outer loop handles complete failures.
+/// Used for transient drops — the outer loop handles complete failures.
 /// </summary>
 public class ExponentialBackoffRetryPolicy : IRetryPolicy
 {
@@ -261,12 +302,11 @@ public class ExponentialBackoffRetryPolicy : IRetryPolicy
 
     public TimeSpan? NextRetryDelay(RetryContext retryContext)
     {
-        // Stop automatic reconnect after 5 attempts
         if (retryContext.PreviousRetryCount >= 5)
             return null;
 
         var baseSeconds = Math.Pow(2, retryContext.PreviousRetryCount);
-        var jitter      = Random.Shared.NextDouble() * 0.3; // 0-30% jitter
+        var jitter      = Random.Shared.NextDouble() * 0.3;
         var delay       = TimeSpan.FromSeconds(baseSeconds * (1 + jitter));
 
         return delay < MaxDelay ? delay : MaxDelay;

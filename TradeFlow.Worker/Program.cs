@@ -80,7 +80,7 @@ builder.Services.AddSingleton<RiskEngineService>(sp =>
     {
         new EntryOnlyRule(),
         new MinXScoreRule(riskOptions.MinXScore),
-        new ApprovedTraderRule(riskOptions.ApprovedTraders)
+        //new ApprovedTraderRule(riskOptions.ApprovedTraders)
     };
 
     if (!riskOptions.AllowLotto)
@@ -99,7 +99,7 @@ builder.Services.AddHostedService<AlertPollingService>();
 
 // SignalR listener, live entry alerts from Xtrades feed
 // Runs alongside the REST polling service
-//builder.Services.AddHostedService<SignalRListenerService>();
+builder.Services.AddHostedService<SignalRListenerService>();
 
 var host = builder.Build();
 host.Run();
