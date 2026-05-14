@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    services:
+      # PostgreSQL for integration tests
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB:       tradeflow_test
+          POSTGRES_USER:     test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      # -- Checkout --
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -- Setup .NET --
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # -- Cache NuGet packages --
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-
+
+      # -- Restore --
+      - name: Restore
+        run: dotnet restore TradeFlow.sln
+
+      # -- Build --
+      - name: Build
+        run: dotnet build TradeFlow.sln
+          --configuration Release
+          --no-restore
+
+      # -- Unit tests --
+      - name: Unit Tests
+        run: dotnet test TradeFlow.Tests/TradeFlow.Tests.csproj
+          --configuration Release
+          --no-build
+          --filter "Category!=Integration"
+          --logger "trx;LogFileName=unit-results.trx"
+
+      # -- Integration tests (need PostgreSQL) --
+      - name: Integration Tests
+        run: dotnet test TradeFlow.Tests/TradeFlow.Tests.csproj
+          --configuration Release
+          --no-build
+          --filter "Category=Integration"
+          --logger "trx;LogFileName=integration-results.trx"
+        env:
+          # TestContainers picks this up, uses service container postgres
+          TESTCONTAINERS_HOST_OVERRIDE: localhost
+
+      # -- Publish test results --
+      - name: Publish Test Results
+        uses: dorny/test-reporter@v1
+        if: always()  # run even if tests fail
+        with:
+          name: Test Results
+          path: '**/*.trx'
+          reporter: dotnet-trx
