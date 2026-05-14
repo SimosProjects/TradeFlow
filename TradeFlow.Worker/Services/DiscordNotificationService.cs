@@ -78,10 +78,10 @@ public class DiscordNotificationService
 
         var title = classification.Category switch
         {
-            AlertCategory.CallOptionEntry => "📈 CALL ENTRY",
-            AlertCategory.PutOptionEntry  => "📉 PUT ENTRY",
-            AlertCategory.StockEntry      => "🏦 STOCK ENTRY",
-            _                             => "⚡ ALERT"
+            AlertCategory.CallOptionEntry => $"📈 CALL — **{alert.Symbol}**",
+            AlertCategory.PutOptionEntry  => $"📉 PUT — **{alert.Symbol}**",
+            AlertCategory.StockEntry      => $"🏦 STOCK — **{alert.Symbol}**",
+            _                             => $"⚡ ALERT — **{alert.Symbol}**"
         };
 
         var description = alert.ContractDescription
@@ -100,8 +100,12 @@ public class DiscordNotificationService
         if (alert.Strike.HasValue)
             fields.Add(Field("Strike", $"${alert.Strike:F0}", true));
 
-        if (alert.Expiration is not null)
-            fields.Add(Field("Expiration", alert.Expiration, true));
+        if (alert.Expiration is not null &&
+            DateTimeOffset.TryParse(alert.Expiration, out var exp))
+            fields.Add(Field("Expiration", exp.ToString("MMM dd yyyy"), true));
+
+        if (!string.IsNullOrWhiteSpace(alert.Risk))
+            fields.Add(Field("Risk", alert.Risk, true));
 
         if (!string.IsNullOrWhiteSpace(alert.OriginalMessage))
             fields.Add(Field("Message", alert.OriginalMessage, false));
