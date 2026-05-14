@@ -64,3 +64,8 @@ app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.Health
 app.MapAlertEndpoints();
 
 app.Run();
+
+namespace TradeFlow.Api
+{
+    public partial class Program { }
+}

@@ -44,6 +44,7 @@ public class TestApiFactory : WebApplicationFactory<Api.Program>
 /// Uses WebApplicationFactory to spin up the full API pipeline
 /// in memory with an in-memory database replacing PostgreSQL.
 /// </summary>
+[Collection("Integration")]
 public class AlertEndpointsTests : IClassFixture<TestApiFactory>
 {
     private readonly TestApiFactory _factory;
