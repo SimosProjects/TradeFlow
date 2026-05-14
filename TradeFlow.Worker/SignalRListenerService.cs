@@ -28,6 +28,7 @@ public class SignalRListenerService : BackgroundService
     private readonly ILogger<SignalRListenerService> _logger;
     private readonly HttpClient                   _httpClient;
     private readonly string                       _token;
+    private readonly DiscordNotificationService   _discord;
 
     // Bounded channel — decouples SignalR callback (fast) from
     // processing pipeline (slower database operations)
@@ -41,12 +42,14 @@ public class SignalRListenerService : BackgroundService
         IAlertNormalizer                 normalizer,
         RiskEngineService                riskEngine,
         IServiceScopeFactory             scopeFactory,
-        ILogger<SignalRListenerService>  logger)
+        ILogger<SignalRListenerService>  logger,
+        DiscordNotificationService       discord)
     {
         _normalizer   = normalizer;
         _riskEngine   = riskEngine;
         _scopeFactory = scopeFactory;
         _logger       = logger;
+        _discord      = discord;
 
         _token = Environment.GetEnvironmentVariable("XTRADES_TOKEN")
             ?? throw new InvalidOperationException(
@@ -266,6 +269,9 @@ public class SignalRListenerService : BackgroundService
             normalized.Symbol,
             normalized.UserName,
             riskResult.Approved ? "APPROVED" : $"REJECTED: {riskResult.Reason}");
+
+        if (riskResult.Approved)
+            await _discord.NotifyApprovedAlertAsync(normalized, classification, stoppingToken);
 
         using var scope = _scopeFactory.CreateScope();
         var repository  = scope.ServiceProvider

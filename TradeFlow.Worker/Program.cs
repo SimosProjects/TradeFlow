@@ -91,6 +91,9 @@ builder.Services.AddSingleton<RiskEngineService>(sp =>
     return new RiskEngineService(rules);
 });
 
+// Discord notification service - Singleton, stateless
+builder.Services.AddSingleton<DiscordNotificationService>();
+
 // Alert repository is registered as Scoped since it depends on the DbContext which is also Scoped
 builder.Services.AddScoped<IAlertRepository, AlertRepository>();
 

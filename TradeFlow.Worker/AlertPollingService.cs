@@ -16,6 +16,7 @@ public class AlertPollingService : BackgroundService
     private readonly PollingOptions _options;
     private readonly ILogger<AlertPollingService> _logger;
     private readonly AlertMetrics _metrics;
+    private readonly DiscordNotificationService _discord;
 
     public AlertPollingService(
         IAlertApiClient client,
@@ -24,7 +25,8 @@ public class AlertPollingService : BackgroundService
         IServiceScopeFactory scopeFactory,
         IOptions<PollingOptions> options,
         ILogger<AlertPollingService> logger,
-        AlertMetrics metrics)
+        AlertMetrics metrics,
+        DiscordNotificationService discord)
     {
         _client = client;
         _normalizer = normalizer;
@@ -33,6 +35,7 @@ public class AlertPollingService : BackgroundService
         _options = options.Value;
         _logger = logger;
         _metrics = metrics;
+        _discord = discord;
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -132,6 +135,9 @@ public class AlertPollingService : BackgroundService
                     alert.Symbol,
                     alert.UserName,
                     alert.XScore);
+
+                // Send Discord notification
+                await _discord.NotifyApprovedAlertAsync(alert, classification, stoppingToken);
             }
 
             sw.Stop();
