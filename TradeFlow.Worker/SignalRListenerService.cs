@@ -272,6 +272,17 @@ public class SignalRListenerService : BackgroundService
                                .GetRequiredService<IAlertRepository>();
 
         var entity = AlertMapper.ToEntity(normalized, riskResult);
+
+        var existingIds = await repository.GetExistingAlertIdsAsync(
+            [entity.Id], stoppingToken);
+
+        if (existingIds.Contains(entity.Id))
+        {
+            _logger.LogDebug(
+                "SignalR alert {Id} already exists — skipping.", entity.Id);
+            return;
+        }
+
         await repository.SaveManyAsync([entity], stoppingToken);
     }
 
