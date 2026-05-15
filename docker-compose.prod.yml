@@ -1,0 +1,14 @@
+services:
+  postgres:
+    restart: always
+    ports: !reset []
+
+  worker:
+    restart: always
+    environment:
+      DOTNET_ENVIRONMENT: Production
+
+  api:
+    restart: always
+    environment:
+      DOTNET_ENVIRONMENT: Production
