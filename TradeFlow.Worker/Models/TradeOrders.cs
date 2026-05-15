@@ -1,31 +1,35 @@
 namespace TradeFlow.Worker.Models;
 
 /// <summary>
-/// Represents an order to be placed with the broker.
-/// Built by PositionSizer from an approved Alert.
+/// Built by PositionSizer from an approved Alert
 /// </summary>
 public record TradeOrder(
-    // Identity
-    string   AlertId,
-    string   UserName,
+    string    AlertId,
+    string    UserName,
+    string    Symbol,
+    TradeType TradeType,
 
-    // Instrument
-    string   Symbol,
-    TradeType TradeType,            // Options or Stock
-    string?  OptionsContractSymbol, // OCC symbol e.g. TSLA260620C00450000
-    string?  Direction,             // call, put, none
+    // OCC symbol e.g. TSLA260620C00450000. Primary key for exit matching.
+    string? OptionsContractSymbol,
+
+    string? Direction,
     decimal? Strike,
-    string?  Expiration,
+    string? Expiration,
 
-    // Order details
-    int      Quantity,              // contracts (options) or shares (stocks)
-    decimal  EstimatedEntryPrice,   // from alert pricePaid
-    decimal  BudgetUsed,            // actual dollar amount committed
+    // Contracts (options) or shares (stocks). Rounded down from budget ÷ price.
+    int Quantity,
 
-    // Risk management
-    decimal  StopPrice,             // calculated stop loss price
-    decimal  TargetPrice,           // calculated profit target price
+    // From alert pricePaid. Actual fill may differ.
+    decimal EstimatedEntryPrice,
 
-    // Metadata
-    bool     IsAverage = false      // true if this is an averaging order
+    // Options: $1,000 initial / $500 average. Stocks: $3,000 / $1,500.
+    decimal BudgetUsed,
+
+    // Options: entry × 0.50. Stocks: entry × 0.85.
+    decimal StopPrice,
+
+    // Options: entry × 3.00 (+200%). Stocks: entry × 1.30 (+30%).
+    decimal TargetPrice,
+
+    bool IsAverage = false
 );
