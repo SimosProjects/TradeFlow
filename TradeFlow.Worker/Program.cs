@@ -15,6 +15,11 @@ builder.Services.AddSerilog((services, config) =>
 var token = Environment.GetEnvironmentVariable("XTRADES_TOKEN")
     ?? throw new InvalidOperationException("XTRADES_TOKEN environment variable is not set.");
 
+// Register IBKR configuration
+builder.Services.Configure<IbkrOptions>(
+    builder.Configuration.GetSection("Ibkr")
+);
+
 // -- Bind and validate options at startup --
 builder.Services
     .AddOptions<XtradesOptions>()
@@ -109,6 +114,9 @@ builder.Services.AddSingleton<TradeGuard>();
 
 // Register the broker trade execution service
 builder.Services.AddSingleton<BrokerExecutionService>();
+
+// Register Ibkr connection
+builder.Services.AddSingleton<IbkrConnectionService>();
 
 // Register the csv trade logger for tracking
 builder.Services.AddSingleton<CsvTradeLogger>();
