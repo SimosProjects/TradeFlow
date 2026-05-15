@@ -17,6 +17,7 @@ public class AlertPollingService : BackgroundService
     private readonly ILogger<AlertPollingService> _logger;
     private readonly AlertMetrics _metrics;
     private readonly DiscordNotificationService _discord;
+    private readonly BrokerExecutionService _execution;
 
     public AlertPollingService(
         IAlertApiClient client,
@@ -26,7 +27,8 @@ public class AlertPollingService : BackgroundService
         IOptions<PollingOptions> options,
         ILogger<AlertPollingService> logger,
         AlertMetrics metrics,
-        DiscordNotificationService discord)
+        DiscordNotificationService discord,
+        BrokerExecutionService execution)
     {
         _client = client;
         _normalizer = normalizer;
@@ -36,6 +38,7 @@ public class AlertPollingService : BackgroundService
         _logger = logger;
         _metrics = metrics;
         _discord = discord;
+        _execution = execution;
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -131,13 +134,23 @@ public class AlertPollingService : BackgroundService
             foreach (var (alert, classification, _) in approved)
             {
                 _logger.LogInformation("APPROVED [{Category}] {Symbol} by {Trader} (xScore: {XScore})",
-                    classification.Category,
-                    alert.Symbol,
-                    alert.UserName,
-                    alert.XScore);
+                    classification.Category, alert.Symbol, alert.UserName, alert.XScore);
 
-                // Send Discord notification
                 await _discord.NotifyApprovedAlertAsync(alert, classification, stoppingToken);
+
+                // BTO entries → place order
+                if (alert.Side?.ToLower() is "bto")
+                    await _execution.HandleEntryAsync(alert, classification, isAverage: false, stoppingToken);
+                // Averaging → average into existing position
+                else if (alert.Side?.ToLower() is "avg")
+                    await _execution.HandleEntryAsync(alert, classification, isAverage: true, stoppingToken);
+            }
+
+            // After the approved loop, handle exits from all processed alerts:
+            foreach (var (alert, _, _) in processed)
+            {
+                if (alert.Side?.ToLower() is "stc" or "btc")
+                    await _execution.HandleExitAsync(alert, stoppingToken);
             }
 
             sw.Stop();
