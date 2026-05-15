@@ -37,6 +37,14 @@ public class BrokerExecutionService
         bool isAverage = false,
         CancellationToken ct = default)
     {
+        // Never place orders outside regular market hours
+        if (!IsMarketOpen())
+        {
+            _logger.LogDebug(
+                "Market closed — skipping order for {Symbol}", alert.Symbol);
+            return;
+        }
+
         var order = _sizer.Size(alert, classification, isAverage);
         if (order is null)
         {
@@ -143,5 +151,20 @@ public class BrokerExecutionService
             closedTrade.PnL ?? 0, closedTrade.PnLPercent ?? 0, closedTrade.Result);
 
         await _discord.NotifyPositionClosedAsync(closedTrade, ct);
+    }
+
+    // Returns true if current time is within regular market hours (9:30am-4:00pm ET, Mon-Fri)
+    private static bool IsMarketOpen()
+    {
+        var et    = TimeZoneInfo.ConvertTime(
+            DateTimeOffset.UtcNow,
+            TimeZoneInfo.FindSystemTimeZoneById("America/New_York"));
+
+        if (et.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+            return false;
+
+        var timeOfDay = et.TimeOfDay;
+        return timeOfDay >= new TimeSpan(9, 30, 0)
+            && timeOfDay <  new TimeSpan(16, 0, 0);
     }
 }
