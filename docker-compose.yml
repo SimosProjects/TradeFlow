@@ -22,14 +22,16 @@ services:
 
   # Worker Service
   worker:
-    image: ghcr.io/simosprojects/tradeflow-worker:latest
+    build:
+      context: .
+      dockerfile: TradeFlow.Worker/Dockerfile
     environment:
       ConnectionStrings__TradeFlow: >-
         Host=postgres;Database=tradeflow;
         Username=tradeflow_user;Password=${POSTGRES_PASSWORD}
       XTRADES_TOKEN: ${XTRADES_TOKEN}
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
-      DOTNET_ENVIRONMENT: Production
+      DOTNET_ENVIRONMENT: Development
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,12 +41,14 @@ services:
 
   # API
   api:
-    image: ghcr.io/simosprojects/tradeflow-api:latest
+    build:
+      context: .
+      dockerfile: TradeFlow.Api/Dockerfile
     environment:
       ConnectionStrings__TradeFlow: >-
         Host=postgres;Database=tradeflow;
         Username=tradeflow_user;Password=${POSTGRES_PASSWORD}
-      DOTNET_ENVIRONMENT: Production
+      DOTNET_ENVIRONMENT: Development
     ports:
       - "5141:8080"
     depends_on:
