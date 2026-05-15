@@ -63,6 +63,12 @@ public class AlertApiClient : IAlertApiClient
                 $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
         }
 
+        // 204 No Content, no alerts available
+        if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
+        {
+            return new List<Alert>();
+        }
+
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
 
         AlertsResponse? result;
