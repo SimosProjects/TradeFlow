@@ -18,7 +18,7 @@ RUN dotnet publish TradeFlow.Worker/TradeFlow.Worker.csproj \
     --output /app/publish
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 # Create non-root user, security hardening
