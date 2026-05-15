@@ -104,6 +104,9 @@ builder.Services.AddSingleton<IBrokerService, NullBrokerService>();
 // Register the position sizer engine
 builder.Services.AddSingleton<PositionSizer>();
 
+// Register the trade guard
+builder.Services.AddSingleton<TradeGuard>();
+
 // Register the csv trade logger for tracking
 builder.Services.AddSingleton<CsvTradeLogger>();
 
