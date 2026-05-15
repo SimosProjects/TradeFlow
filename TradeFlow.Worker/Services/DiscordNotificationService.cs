@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using TradeFlow.Worker.Models;
 
 namespace TradeFlow.Worker.Services;
 
@@ -10,9 +11,9 @@ namespace TradeFlow.Worker.Services;
 /// </summary>
 public class DiscordNotificationService
 {
-    private readonly HttpClient                        _httpClient;
+    private readonly HttpClient _httpClient;
     private readonly ILogger<DiscordNotificationService> _logger;
-    private readonly string?                           _webhookUrl;
+    private readonly string? _webhookUrl;
 
     public DiscordNotificationService(
         ILogger<DiscordNotificationService> logger)
@@ -60,6 +61,85 @@ public class DiscordNotificationService
             // Never let notification failure affect the main pipeline
             _logger.LogWarning(ex,
                 "Failed to send Discord notification — continuing.");
+        }
+    }
+
+    // Called after a broker order is placed, shows fill details and bracket prices
+    public async Task NotifyOrderPlacedAsync(
+        TradeRecord trade,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_webhookUrl)) return;
+
+        try
+        {
+            var typeEmoji = trade.TradeType == TradeType.Options
+                ? (trade.Direction == "call" ? "📈" : "📉")
+                : "🏦";
+
+            var embed = new
+            {
+                title  = $"{typeEmoji} ORDER PLACED — {trade.Symbol}",
+                color  = trade.Direction == "call" ? 0x2ECC71 : trade.Direction == "put" ? 0xE74C3C : 0x3498DB,
+                fields = new[]
+                {
+                    new { name = "Symbol", value = trade.Symbol, inline = true },
+                    new { name = "Contracts", value = trade.Quantity.ToString(), inline = true },
+                    new { name = "Entry", value = $"${trade.EntryPrice:F2}", inline = true },
+                    new { name = "Stop", value = $"${trade.StopPrice:F2}", inline = true },
+                    new { name = "Target", value = $"${trade.TargetPrice:F2}", inline = true },
+                    new { name = "Amount", value = $"${trade.EntryAmount:F2}", inline = true },
+                },
+                footer    = new { text = "TradeFlow Order" },
+                timestamp = DateTimeOffset.UtcNow.ToString("o")
+            };
+
+            var payload = new { embeds = new[] { embed } };
+            await _httpClient.PostAsJsonAsync(_webhookUrl, payload, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to send order placed Discord notification.");
+        }
+    }
+
+    // Called when a position closes, shows P&L result
+    public async Task NotifyPositionClosedAsync(
+        TradeRecord trade,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_webhookUrl)) return;
+
+        try
+        {
+            var isWin  = trade.PnL >= 0;
+            var emoji  = isWin ? "✅" : "🛑";
+            var color  = isWin ? 0x2ECC71 : 0xE74C3C;
+            var pnlSign = trade.PnL >= 0 ? "+" : "";
+
+            var embed = new
+            {
+                title  = $"{emoji} POSITION CLOSED — {trade.Symbol}",
+                color,
+                fields = new[]
+                {
+                    new { name = "Symbol",   value = trade.Symbol, inline = true },
+                    new { name = "Outcome",  value = trade.Result.ToString(), inline = true },
+                    new { name = "Exit",     value = $"${trade.ExitPrice:F2}", inline = true },
+                    new { name = "P&L",      value = $"{pnlSign}${trade.PnL:F2}", inline = true },
+                    new { name = "P&L %",    value = $"{pnlSign}{trade.PnLPercent:F2}%", inline = true },
+                    new { name = "Amount",   value = $"${trade.ExitAmount:F2}", inline = true },
+                },
+                footer    = new { text = "TradeFlow Trade Result" },
+                timestamp = DateTimeOffset.UtcNow.ToString("o")
+            };
+
+            var payload = new { embeds = new[] { embed } };
+            await _httpClient.PostAsJsonAsync(_webhookUrl, payload, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to send position closed Discord notification.");
         }
     }
 

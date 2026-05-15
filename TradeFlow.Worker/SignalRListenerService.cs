@@ -19,16 +19,17 @@ public class SignalRListenerService : BackgroundService
         "https://app.xtrades.net/api/v2/signalr/negotiate";
 
     // Confirmed from browser DevTools inspection
-    private const string AlertEventName   = "newAlert";
-    private const string HubName          = "notification";
+    private const string AlertEventName = "newAlert";
+    private const string HubName = "notification";
 
-    private readonly IAlertNormalizer             _normalizer;
-    private readonly RiskEngineService            _riskEngine;
-    private readonly IServiceScopeFactory         _scopeFactory;
+    private readonly IAlertNormalizer _normalizer;
+    private readonly RiskEngineService _riskEngine;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SignalRListenerService> _logger;
-    private readonly HttpClient                   _httpClient;
-    private readonly string                       _token;
-    private readonly DiscordNotificationService   _discord;
+    private readonly HttpClient _httpClient;
+    private readonly string _token;
+    private readonly DiscordNotificationService _discord;
+    private readonly BrokerExecutionService _execution;
 
     // Bounded channel — decouples SignalR callback (fast) from
     // processing pipeline (slower database operations)
@@ -39,17 +40,19 @@ public class SignalRListenerService : BackgroundService
         });
 
     public SignalRListenerService(
-        IAlertNormalizer                 normalizer,
-        RiskEngineService                riskEngine,
-        IServiceScopeFactory             scopeFactory,
-        ILogger<SignalRListenerService>  logger,
-        DiscordNotificationService       discord)
+        IAlertNormalizer normalizer,
+        RiskEngineService riskEngine,
+        IServiceScopeFactory scopeFactory,
+        ILogger<SignalRListenerService> logger,
+        DiscordNotificationService discord,
+        BrokerExecutionService execution)
     {
-        _normalizer   = normalizer;
-        _riskEngine   = riskEngine;
+        _normalizer = normalizer;
+        _riskEngine = riskEngine;
         _scopeFactory = scopeFactory;
-        _logger       = logger;
-        _discord      = discord;
+        _logger = logger;
+        _discord = discord;
+        _execution = execution;
 
         _token = Environment.GetEnvironmentVariable("XTRADES_TOKEN")
             ?? throw new InvalidOperationException(
@@ -271,7 +274,18 @@ public class SignalRListenerService : BackgroundService
             riskResult.Approved ? "APPROVED" : $"REJECTED: {riskResult.Reason}");
 
         if (riskResult.Approved)
+        {
             await _discord.NotifyApprovedAlertAsync(normalized, classification, stoppingToken);
+
+            if (normalized.Side?.ToLower() is "bto")
+                await _execution.HandleEntryAsync(normalized, classification, isAverage: false, stoppingToken);
+            else if (normalized.Side?.ToLower() is "avg")
+                await _execution.HandleEntryAsync(normalized, classification, isAverage: true, stoppingToken);
+        }
+
+        // Handle exits regardless of risk approval, exits don't need risk approval
+        if (normalized.Side?.ToLower() is "stc" or "btc")
+            await _execution.HandleExitAsync(normalized, stoppingToken);
 
         using var scope = _scopeFactory.CreateScope();
         var repository  = scope.ServiceProvider
