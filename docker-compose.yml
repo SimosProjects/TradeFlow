@@ -6,12 +6,10 @@ services:
     environment:
       POSTGRES_DB:       tradeflow
       POSTGRES_USER:     tradeflow_user
-      POSTGRES_PASSWORD: tradeflow_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      # Named volume, data persists across container restarts
       - postgres_data:/var/lib/postgresql/data
     ports:
-      # Expose to host for psql/pgAdmin access during development
       - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tradeflow_user -d tradeflow"]
@@ -28,16 +26,15 @@ services:
       context: .
       dockerfile: TradeFlow.Worker/Dockerfile
     environment:
-      # Connection string overrides appsettings.json
       ConnectionStrings__TradeFlow: >-
         Host=postgres;Database=tradeflow;
-        Username=tradeflow_user;Password=tradeflow_dev
-      # Token injected from host environment, never hardcoded
+        Username=tradeflow_user;Password=${POSTGRES_PASSWORD}
       XTRADES_TOKEN: ${XTRADES_TOKEN}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
       DOTNET_ENVIRONMENT: Development
     depends_on:
       postgres:
-        condition: service_healthy  # Wait for postgres healthcheck to pass
+        condition: service_healthy
     networks:
       - tradeflow-net
     restart: unless-stopped
@@ -50,7 +47,7 @@ services:
     environment:
       ConnectionStrings__TradeFlow: >-
         Host=postgres;Database=tradeflow;
-        Username=tradeflow_user;Password=tradeflow_dev
+        Username=tradeflow_user;Password=${POSTGRES_PASSWORD}
       DOTNET_ENVIRONMENT: Development
     ports:
       - "5141:8080"
