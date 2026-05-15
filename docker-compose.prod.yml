@@ -4,11 +4,13 @@ services:
     ports: !reset []
 
   worker:
+    image: ghcr.io/simosprojects/tradeflow-worker:latest
     restart: always
     environment:
       DOTNET_ENVIRONMENT: Production
 
   api:
+    image: ghcr.io/simosprojects/tradeflow-api:latest
     restart: always
     environment:
       DOTNET_ENVIRONMENT: Production
