@@ -1,0 +1,11 @@
+namespace TradeFlow.Worker.Models;
+
+public enum OrderStatus
+{
+    Filled,
+    PartialFill,
+    Pending,
+    Cancelled,
+    Rejected,
+    Simulated
+}
