@@ -1,5 +1,6 @@
 using TradeFlow.Worker;
 using TradeFlow.Worker.Metrics;
+using TradeFlow.Worker.Engine;
 
 AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
@@ -99,6 +100,9 @@ builder.Services.AddScoped<IAlertRepository, AlertRepository>();
 
 // Register the broker service
 builder.Services.AddSingleton<IBrokerService, NullBrokerService>();
+
+// Register the position sizer engine
+builder.Services.AddSingleton<PositionSizer>();
 
 // Register the alert polling service as a hosted service that runs in the background
 builder.Services.AddHostedService<AlertPollingService>();
