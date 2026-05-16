@@ -25,7 +25,7 @@ public record TradeOrder(
     // Options: $1,000 initial / $500 average. Stocks: $3,000 / $1,500.
     decimal BudgetUsed,
 
-    // Options: entry × 0.50. Stocks: entry × 0.85.
+    // StopPrice is the initial trail reference price, not a fixed level.
     decimal StopPrice,
 
     // Options: entry × 3.00 (+200%). Stocks: entry × 1.30 (+30%).

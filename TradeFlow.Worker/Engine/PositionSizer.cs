@@ -55,6 +55,7 @@ public class PositionSizer
         if (quantity < MinQuantity)
             return null;
 
+        // The actual stop moves with the market once the trailing stop is active on IBKR.
         var stopPrice = isOptions
             ? price.Value * OptionsStopMultiplier
             : price.Value * StockStopMultiplier;
