@@ -9,18 +9,13 @@ builder.Services.AddSerilog((services, config) =>
     config.ReadFrom.Configuration(builder.Configuration)
           .Enrich.FromLogContext());
 
-// -- Configuration --
-
-// Read configuration from environment variables, with a fallback to throw an exception if not set
+// Configuration
 var token = Environment.GetEnvironmentVariable("XTRADES_TOKEN")
     ?? throw new InvalidOperationException("XTRADES_TOKEN environment variable is not set.");
 
-// Register IBKR configuration
 builder.Services.Configure<IbkrOptions>(
-    builder.Configuration.GetSection("Ibkr")
-);
+    builder.Configuration.GetSection("Ibkr"));
 
-// -- Bind and validate options at startup --
 builder.Services
     .AddOptions<XtradesOptions>()
     .Bind(builder.Configuration.GetSection(XtradesOptions.SectionName))
@@ -39,24 +34,19 @@ builder.Services
     .ValidateDataAnnotations()
     .ValidateOnStart();
 
-// -- Database --
-
-// Get the connection string from configuration, with a fallback to throw an exception if not set
+// Database
 var connectionString = builder.Configuration.GetConnectionString("TradeFlow")
-    ?? throw new InvalidOperationException(
-        "TradeFlow connection string is not configured.");
+    ?? throw new InvalidOperationException("TradeFlow connection string is not configured.");
 
-// Register the DbContext with a scoped lifetime, which is appropriate for database contexts
 builder.Services.AddDbContext<TradeFlowDbContext>(options =>
 {
     options.UseNpgsql(connectionString);
-    options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking); // Use NoTracking for read-only operations to improve performance
+    // NoTracking improves read performance, opt in with AsTracking() only when saving
+    options.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
 },
 ServiceLifetime.Scoped);
 
-// -- Register services --
-
-// Register as a typed client
+// HTTP client for Xtrades API with resilience policies
 builder.Services.AddHttpClient<IAlertApiClient, TradeFlow.Worker.Services.AlertApiClient>(client =>
 {
     client.BaseAddress = new Uri("https://app.xtrades.net");
@@ -71,13 +61,10 @@ builder.Services.AddHttpClient<IAlertApiClient, TradeFlow.Worker.Services.AlertA
     options.Retry.MaxRetryAttempts = 3;
 });
 
-// Normalizer is registered as a Singleton since it is stateless and can be shared across the application
 builder.Services.AddSingleton<IAlertNormalizer, AlertNormalizer>();
-
-// Metrics — Singleton, Meter is thread-safe
 builder.Services.AddSingleton<AlertMetrics>();
 
-// Risk rules - read from options
+// Risk engine, rules are composed from options at startup
 builder.Services.AddSingleton<RiskEngineService>(sp =>
 {
     var riskOptions = sp.GetRequiredService<IOptions<RiskEngineOptions>>().Value;
@@ -86,51 +73,31 @@ builder.Services.AddSingleton<RiskEngineService>(sp =>
     {
         new EntryOnlyRule(),
         new MinXScoreRule(riskOptions.MinXScore),
-        //new ApprovedTraderRule(riskOptions.ApprovedTraders)
+        // new ApprovedTraderRule(riskOptions.ApprovedTraders) -- re-enable when approved traders are configured
     };
 
     if (!riskOptions.AllowLotto)
-    {
         rules.Insert(1, new NoLottoRule());
-    }
 
     return new RiskEngineService(rules);
 });
 
-// Discord notification service - Singleton, stateless
 builder.Services.AddSingleton<DiscordNotificationService>();
-
-// Alert repository is registered as Scoped since it depends on the DbContext which is also Scoped
 builder.Services.AddScoped<IAlertRepository, AlertRepository>();
-
-// Register the broker service
-builder.Services.AddSingleton<IBrokerService, NullBrokerService>();
-
-// Register the position sizer engine
 builder.Services.AddSingleton<PositionSizer>();
-
-// Register the trade guard
 builder.Services.AddSingleton<TradeGuard>();
-
-// Register the broker trade execution service
+builder.Services.AddSingleton<CsvTradeLogger>();
 builder.Services.AddSingleton<BrokerExecutionService>();
 
-// Register Ibkr connection
+// Broker, swap IBrokerService registration to IbkrBrokerService when IB Gateway is confirmed working
 builder.Services.AddSingleton<IbkrConnectionService>();
-
-// Register IbkrBrokerService, not active yet, swap with the one below when ready for paper trading
 builder.Services.AddSingleton<IbkrBrokerService>();
-// Active broker, swap to IbkrBrokerService when IB Gateway is confirmed working
-//builder.Services.AddSingleton<IBrokerService, NullBrokerService>();
+builder.Services.AddSingleton<IBrokerService, NullBrokerService>();
+//builder.Services.AddSingleton<IBrokerService, IbkrBrokerService>();
 
-// Register the csv trade logger for tracking
-builder.Services.AddSingleton<CsvTradeLogger>();
-
-// Register the alert polling service as a hosted service that runs in the background
+// Hosted services
+builder.Services.AddHostedService<PositionMonitorService>();
 builder.Services.AddHostedService<AlertPollingService>();
-
-// SignalR listener, live entry alerts from Xtrades feed
-// Runs alongside the REST polling service
 builder.Services.AddHostedService<SignalRListenerService>();
 
 var host = builder.Build();
