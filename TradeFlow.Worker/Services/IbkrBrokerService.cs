@@ -71,6 +71,51 @@ public class IbkrBrokerService : IBrokerService
     }
 
     /// <summary>
+    /// Returns the current average cost of an open position from IBKR position data.
+    /// Used by PositionMonitorService to check stop and target thresholds.
+    /// </summary>
+    /// <param name="trade">The open trade record to look up.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Current price per share or contract, or 0 if not found or timed out.</returns>
+    public async Task<decimal> GetCurrentPositionPriceAsync(TradeRecord trade, CancellationToken ct = default)
+    {
+        if (!EnsureConnected())
+            return 0m;
+
+        // Build the key to match the position callback registered in IbkrEWrapper
+        var key = trade.TradeType == TradeType.Options
+            ? $"{trade.Symbol}::{trade.OptionsContract}"
+            : $"{trade.Symbol}::STK";
+
+        var tcs = _connection.Wrapper.RegisterPositionCallback(key);
+
+        _connection.Client.reqPositions();
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(_options.TimeoutMs);
+
+            var price = await tcs.Task.WaitAsync(cts.Token);
+
+            _logger.LogDebug(
+                "IBKR current price for {Symbol}: ${Price:F2}", trade.Symbol, price);
+
+            return price;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "IBKR GetCurrentPositionPrice timed out for {Symbol}.", trade.Symbol);
+            return 0m;
+        }
+        finally
+        {
+            _connection.Client.cancelPositions();
+        }
+    }
+
+    /// <summary>
     /// Returns the total market value of all open positions.
     /// Used by <see cref="TradeGuard"/> to calculate current exposure before new orders.
     /// </summary>

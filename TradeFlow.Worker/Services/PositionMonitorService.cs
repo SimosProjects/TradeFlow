@@ -150,14 +150,11 @@ public class PositionMonitorService : BackgroundService
     {
         try
         {
-            // For paper trading the last checked price comes from the broker position data.
-            // This is a best-effort estimate — real-time quotes via reqMktData would be more accurate.
-            return await Task.FromResult(0m); // placeholder until reqMktData is implemented
+            return await _broker.GetCurrentPositionPriceAsync(trade, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex,
-                "Could not get current price for {Symbol}.", trade.Symbol);
+            _logger.LogWarning(ex, "Could not get current price for {Symbol}.", trade.Symbol);
             return 0m;
         }
     }

@@ -2,25 +2,31 @@ using IBApi;
 
 namespace TradeFlow.Worker.Services;
 
-// Receives all callbacks from IB Gateway.
-// Only implements what TradeFlow needs, all others are no-ops.
+/// <summary>
+/// Receives all callbacks from IB Gateway. Only implements what TradeFlow needs,
+/// all others are no-ops required by the EWrapper interface contract.
+/// </summary>
 public class IbkrEWrapper : EWrapper
 {
     private readonly ILogger<IbkrEWrapper> _logger;
 
     // Order status callbacks keyed by orderId
     private readonly Dictionary<int, TaskCompletionSource<OrderState>> _orderCallbacks = new();
-    private readonly Lock _lock = new();
 
     // Account summary callbacks keyed by reqId
     private readonly Dictionary<int, TaskCompletionSource<string>> _accountCallbacks = new();
+
+    // Position callbacks keyed by symbol match key
+    private readonly Dictionary<string, TaskCompletionSource<decimal>> _positionCallbacks = new();
+
+    private readonly Lock _lock = new();
 
     public IbkrEWrapper(ILogger<IbkrEWrapper> logger)
     {
         _logger = logger;
     }
 
-    // Called when an order status changes — notifies awaiting PlaceOrderAsync calls
+    // Notifies awaiting PlaceOrderAsync calls when an order status changes
     public void orderStatus(int orderId, string status, double filled, double remaining,
         double avgFillPrice, int permId, int parentId, double lastFillPrice,
         int clientId, string whyHeld, double mktCapPrice)
@@ -42,12 +48,12 @@ public class IbkrEWrapper : EWrapper
         }
     }
 
+    // Handles both NetLiquidation and GrossPositionValue tags for account balance and exposure checks
     public void accountSummary(int reqId, string account, string tag, string value, string currency)
     {
-        _logger.LogDebug("IBKR AccountSummary — {Tag}: {Value} {Currency}", tag, value, currency);
+        _logger.LogDebug("IBKR AccountSummary {Tag}: {Value} {Currency}", tag, value, currency);
         lock (_lock)
         {
-            // Handle both NetLiquidation and GrossPositionValue callbacks
             if (tag is "NetLiquidation" or "GrossPositionValue" &&
                 _accountCallbacks.TryGetValue(reqId, out var tcs))
             {
@@ -55,6 +61,39 @@ public class IbkrEWrapper : EWrapper
                 _accountCallbacks.Remove(reqId);
             }
         }
+    }
+
+    // Resolves position price callbacks used by PositionMonitorService
+    public void position(string account, Contract contract, double pos, double avgCost)
+    {
+        // Build the same match key used by TradeGuard to correlate positions
+        var key = contract.SecType == "OPT"
+            ? $"{contract.Symbol}::{contract.LocalSymbol}"
+            : $"{contract.Symbol}::STK";
+
+        _logger.LogDebug(
+            "IBKR Position {Symbol} qty: {Pos} avgCost: {Cost}", contract.Symbol, pos, avgCost);
+
+        lock (_lock)
+        {
+            if (_positionCallbacks.TryGetValue(key, out var tcs))
+            {
+                tcs.TrySetResult((decimal)avgCost);
+                _positionCallbacks.Remove(key);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Registers a callback that resolves when IBKR returns position data for the given symbol key.
+    /// </summary>
+    /// <param name="key">Match key in the format Symbol::LocalSymbol for options or Symbol::STK for stocks.</param>
+    /// <returns>A <see cref="TaskCompletionSource{T}"/> that completes when position data arrives.</returns>
+    public TaskCompletionSource<decimal> RegisterPositionCallback(string key)
+    {
+        var tcs = new TaskCompletionSource<decimal>();
+        lock (_lock) { _positionCallbacks[key] = tcs; }
+        return tcs;
     }
 
     /// <summary>
@@ -108,7 +147,7 @@ public class IbkrEWrapper : EWrapper
             _logger.LogError("IBKR Error [{Code}] Id {Id}: {Message}", errorCode, id, errorMsg);
     }
 
-    // -- Required interface stubs --
+    // Required interface stubs
     public void tickPrice(int tickerId, int field, double price, TickAttrib attribs) { }
     public void tickSize(int tickerId, int field, int size) { }
     public void tickString(int tickerId, int field, string value) { }
@@ -139,7 +178,6 @@ public class IbkrEWrapper : EWrapper
     public void updateMktDepth(int tickerId, int position, int operation, int side, double price, int size) { }
     public void updateMktDepthL2(int tickerId, int position, string marketMaker, int operation, int side, double price, int size, bool isSmartDepth) { }
     public void updateNewsBulletin(int msgId, int msgType, string message, string origExchange) { }
-    public void position(string account, Contract contract, double pos, double avgCost) { }
     public void positionEnd() { }
     public void realtimeBar(int reqId, long date, double open, double high, double low, double close, long volume, double WAP, int count) { }
     public void scannerParameters(string xml) { }

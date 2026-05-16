@@ -54,6 +54,20 @@ public class NullBrokerService : IBrokerService
     }
 
     /// <summary>
+    /// Returns a simulated current price at 10% above entry for testing position monitoring.
+    /// </summary>
+    public Task<decimal> GetCurrentPositionPriceAsync(
+        TradeRecord trade,
+        CancellationToken ct = default)
+    {
+        var simulatedPrice = trade.EntryPrice * 1.10m;
+        _logger.LogDebug(
+            "[NullBroker] GetCurrentPositionPrice {Symbol} → ${Price:F2} simulated",
+            trade.Symbol, simulatedPrice);
+        return Task.FromResult(simulatedPrice);
+    }
+
+    /// <summary>
     /// Simulates closing a position and returns a fake fill at 10% above entry.
     /// </summary>
     /// <param name="trade">The trade record to simulate closing.</param>
