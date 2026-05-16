@@ -176,6 +176,18 @@ public class TradeGuard
         }
     }
 
+    /// <summary>
+    /// Returns the number of trades placed today. Resets at midnight ET.
+    /// </summary>
+    public int GetDailyTradeCount()
+    {
+        ResetDailyCountIfNewDay();
+        lock (_lock)
+        {
+            return _dailyTradeCount;
+        }
+    }
+
     // Options: userName + OCC symbol. Stocks: userName + ticker symbol
     private static string BuildMatchKey(string userName, string? contractSymbol, string symbol) =>
         contractSymbol is not null
