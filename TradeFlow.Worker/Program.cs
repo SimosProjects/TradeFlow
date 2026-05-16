@@ -88,6 +88,7 @@ builder.Services.AddSingleton<PositionSizer>();
 builder.Services.AddSingleton<TradeGuard>();
 builder.Services.AddSingleton<CsvTradeLogger>();
 builder.Services.AddSingleton<BrokerExecutionService>();
+builder.Services.AddHostedService<MarketSchedulerService>();
 
 // Broker, swap IBrokerService registration to IbkrBrokerService when IB Gateway is confirmed working
 builder.Services.AddSingleton<IbkrConnectionService>();
