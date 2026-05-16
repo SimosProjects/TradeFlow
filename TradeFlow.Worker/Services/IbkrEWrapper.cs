@@ -47,7 +47,9 @@ public class IbkrEWrapper : EWrapper
         _logger.LogDebug("IBKR AccountSummary — {Tag}: {Value} {Currency}", tag, value, currency);
         lock (_lock)
         {
-            if (tag == "NetLiquidation" && _accountCallbacks.TryGetValue(reqId, out var tcs))
+            // Handle both NetLiquidation and GrossPositionValue callbacks
+            if (tag is "NetLiquidation" or "GrossPositionValue" &&
+                _accountCallbacks.TryGetValue(reqId, out var tcs))
             {
                 tcs.TrySetResult(value);
                 _accountCallbacks.Remove(reqId);
