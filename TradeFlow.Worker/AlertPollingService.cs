@@ -4,8 +4,8 @@ using TradeFlow.Worker.Metrics;
 namespace TradeFlow.Worker;
 
 /// <summary>
-/// Polls the XTrades API for new alerts on a regular interval, processes them through the
-/// normalization, classification, and risk evaluation pipeline, and logs the results.
+/// Polls the Xtrades API for new alerts on a regular interval and processes them
+/// through the normalization, classification, and risk evaluation pipeline.
 /// </summary>
 public class AlertPollingService : BackgroundService
 {
@@ -40,10 +40,11 @@ public class AlertPollingService : BackgroundService
         _discord = discord;
         _execution = execution;
     }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "Alert polling service started - interval: {Interval}s",
+            "Alert polling service started. Interval: {Interval}s",
             _options.IntervalSeconds);
 
         try
@@ -59,58 +60,47 @@ public class AlertPollingService : BackgroundService
         }
         catch (OperationCanceledException)
         {
-            // Expected on shutdown — not an error
+            // Expected on shutdown
         }
         finally
         {
-            // Guaranteed to run whether cancelled or not
             _logger.LogInformation("Alert polling service stopped.");
         }
     }
 
-    /// <summary>
-    /// Executes a single poll cycle: fetches alerts, processes them through the pipeline, and logs the results.
-    /// Exceptions are caught and logged so the polling loop always continues.
-    /// </summary>
-    /// <param name="stoppingToken"></param>
-    /// <returns></returns>
+    // Executes a single poll cycle. Exceptions are caught and logged so the loop always continues.
     private async Task PollOnceAsync(CancellationToken stoppingToken)
     {
         var sw = Stopwatch.StartNew();
-        
+
         try
         {
-            // Create a new scope for this poll cycle to get a fresh instance of the repository
+            // Scoped per cycle so the DbContext is never shared across poll cycles
             using var scope = _scopeFactory.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<IAlertRepository>();
-    
+
             var alerts = await _client.GetAlertsAsync(stoppingToken);
 
             _metrics.AlertsFetched.Add(alerts.Count);
-
             _logger.LogInformation("Fetched {Count} alerts from API.", alerts.Count);
 
-            // One query to the database to get all existing IDs, then filter in memory - more efficient than querying for each alert
+            // Single batch query then filter in memory, more efficient than one query per alert
             var incomingIds = alerts
                 .Where(a => a.Id is not null)
                 .Select(a => a.Id!)
                 .ToList();
-            
+
             var existingIds = await repository.GetExistingAlertIdsAsync(incomingIds, stoppingToken);
 
-            // Filter out any alerts that already exist in the database based on their ID
             var newAlerts = alerts
                 .Where(a => a.Id is not null && !existingIds.Contains(a.Id!))
                 .ToList();
 
             _metrics.AlertsNew.Add(newAlerts.Count);
-
             _logger.LogInformation("New alerts after deduplication: {New} / {Total}", newAlerts.Count, alerts.Count);
 
             if (newAlerts.Count == 0)
-            {
-                return; // No new alerts to process
-            }
+                return;
 
             var processed = newAlerts
                 .Where(_normalizer.IsProcessable)
@@ -128,7 +118,7 @@ public class AlertPollingService : BackgroundService
             _metrics.AlertsApproved.Add(approved.Count);
             _metrics.AlertsRejected.Add(rejected.Count);
 
-            _logger.LogInformation("Pipeline complete - Approved: {Approved}, Rejected: {Rejected}",
+            _logger.LogInformation("Pipeline complete. Approved: {Approved}, Rejected: {Rejected}",
                 approved.Count, rejected.Count);
 
             foreach (var (alert, classification, _) in approved)
@@ -138,15 +128,13 @@ public class AlertPollingService : BackgroundService
 
                 await _discord.NotifyApprovedAlertAsync(alert, classification, stoppingToken);
 
-                // BTO entries → place order
                 if (alert.Side?.ToLower() is "bto")
                     await _execution.HandleEntryAsync(alert, classification, isAverage: false, stoppingToken);
-                // Averaging → average into existing position
                 else if (alert.Side?.ToLower() is "avg")
                     await _execution.HandleEntryAsync(alert, classification, isAverage: true, stoppingToken);
             }
 
-            // After the approved loop, handle exits from all processed alerts:
+            // Exits are processed from all alerts, not just approved ones
             foreach (var (alert, _, _) in processed)
             {
                 if (alert.Side?.ToLower() is "stc" or "btc")
@@ -157,7 +145,7 @@ public class AlertPollingService : BackgroundService
             _metrics.PollDurationMs.Record(sw.ElapsedMilliseconds,
                 new TagList { { "result", "success" } });
 
-            // Save both approved and rejected alerts with their risk evaluation so we can audit why alerts were filtered out
+            // Both approved and rejected are persisted so we can audit risk decisions later
             var entities = processed.Select(p => AlertMapper.ToEntity(p.Alert, p.RiskResult)).ToList();
             await repository.SaveManyAsync(entities, stoppingToken);
         }
@@ -170,11 +158,9 @@ public class AlertPollingService : BackgroundService
             sw.Stop();
             _metrics.PollDurationMs.Record(sw.ElapsedMilliseconds,
                 new TagList { { "result", "error" } });
-                
-            _logger.LogError(
-                ex, 
-                "Poll cycle failed - will retry in {Interval}s.", 
-                _options.IntervalSeconds);
+
+            _logger.LogError(ex,
+                "Poll cycle failed. Will retry in {Interval}s.", _options.IntervalSeconds);
         }
     }
 }

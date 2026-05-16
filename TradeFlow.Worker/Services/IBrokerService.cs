@@ -20,6 +20,17 @@ public interface IBrokerService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the current market price of an open position from IBKR position data.
+    /// Used by PositionMonitorService to evaluate stop and target thresholds.
+    /// </summary>
+    /// <param name="trade">The open trade record to look up.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Current price per share or contract, or 0 if not found.</returns>
+    Task<decimal> GetCurrentPositionPriceAsync(
+        TradeRecord trade,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Cancels pending stop and target orders then places a market close order.
     /// </summary>
     /// <param name="trade">The open trade record to close.</param>
