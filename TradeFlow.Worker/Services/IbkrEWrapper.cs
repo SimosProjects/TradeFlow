@@ -19,6 +19,8 @@ public class IbkrEWrapper : EWrapper
     // Position callbacks keyed by symbol match key
     private readonly Dictionary<string, TaskCompletionSource<decimal>> _positionCallbacks = new();
 
+    private Action? _onConnectionClosed;
+
     private readonly Lock _lock = new();
 
     public IbkrEWrapper(ILogger<IbkrEWrapper> logger)
@@ -129,8 +131,14 @@ public class IbkrEWrapper : EWrapper
     public void managedAccounts(string accountsList) =>
         _logger.LogInformation("IBKR Managed Accounts: {Accounts}", accountsList);
 
-    public void connectionClosed() =>
+    public void connectionClosed()
+    {
         _logger.LogWarning("IBKR connection closed.");
+        _onConnectionClosed?.Invoke();
+    }
+
+    public void SetConnectionClosedCallback(Action onConnectionClosed) =>
+        _onConnectionClosed = onConnectionClosed;
 
     public void error(Exception e) =>
         _logger.LogError(e, "IBKR Exception");

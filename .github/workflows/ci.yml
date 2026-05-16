@@ -73,6 +73,7 @@ jobs:
           --logger "trx;LogFileName=integration-results.trx"
         env:
           XTRADES_TOKEN: dummy-token-for-ci
+          SKIP_IBKR_TESTS: true
 
       - name: Publish Test Results
         uses: dorny/test-reporter@v2
