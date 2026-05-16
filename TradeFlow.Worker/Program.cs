@@ -73,7 +73,7 @@ builder.Services.AddSingleton<RiskEngineService>(sp =>
     {
         new EntryOnlyRule(),
         new MinXScoreRule(riskOptions.MinXScore),
-        // new ApprovedTraderRule(riskOptions.ApprovedTraders) -- re-enable when approved traders are configured
+        new ApprovedTraderRule(riskOptions.ApprovedTraders)
     };
 
     if (!riskOptions.AllowLotto)
