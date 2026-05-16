@@ -120,6 +120,26 @@ public class TradeGuardTests
     }
 
     [Fact]
+    public async Task CheckAsync_BlocksWhenDailyLimitReached()
+    {
+        // Register 10 distinct trades to hit the daily limit of 10
+        for (int i = 0; i < 10; i++)
+        {
+            var o = BuildOrder(
+                symbol: $"TICK{i}",
+                contractSymbol: $"TICK{i}260620C00100000");
+            _guard.RegisterOpen(o, BuildResult($"ORDER-{i:D3}"));
+        }
+
+        // The 11th trade should be blocked
+        var order = BuildOrder(symbol: "NEW", contractSymbol: "NEW260620C00100000");
+        var result = await _guard.CheckAsync(order);
+
+        result.Should().NotBeNull();
+        result.Should().Contain("Daily trade limit");
+    }
+
+    [Fact]
     public void RegisterClose_PopulatesExitData()
     {
         var order = BuildOrder();
@@ -142,5 +162,41 @@ public class TradeGuardTests
         _guard.RegisterOpen(order, BuildResult());
 
         _guard.GetDailyTradeCount().Should().Be(1);
+    }
+
+    [Fact]
+    public void GetOpenTrades_ReturnsAllOpenPositions()
+    {
+        var order1 = BuildOrder(symbol: "TSLA", contractSymbol: "TSLA260620C00450000");
+        var order2 = BuildOrder(symbol: "AAPL", contractSymbol: "AAPL260620C00200000");
+
+        _guard.RegisterOpen(order1, BuildResult("ORDER-001"));
+        _guard.RegisterOpen(order2, BuildResult("ORDER-002"));
+
+        var openTrades = _guard.GetOpenTrades();
+
+        openTrades.Should().HaveCount(2);
+        openTrades.Should().Contain(t => t.Symbol == "TSLA");
+        openTrades.Should().Contain(t => t.Symbol == "AAPL");
+    }
+
+    [Fact]
+    public void FindOpenTrade_ReturnsNullWhenNoMatch()
+    {
+        var result = _guard.FindOpenTrade("TestTrader", "TSLA260620C00450000", "TSLA");
+
+        result.Should().BeNull();
+    }
+
+    [Fact]
+    public void FindOpenTrade_ReturnsTradeAfterRegisterOpen()
+    {
+        var order = BuildOrder();
+        _guard.RegisterOpen(order, BuildResult());
+
+        var result = _guard.FindOpenTrade("TestTrader", "TSLA260620C00450000", "TSLA");
+
+        result.Should().NotBeNull();
+        result!.Symbol.Should().Be("TSLA");
     }
 }

@@ -58,13 +58,12 @@ public class AlertEndpointsTests : IClassFixture<TestApiFactory>
     }
 
     // -- GET /api/alerts --
+
     [Fact]
     public async Task GetAlerts_EmptyDatabase_Returns200WithEmptyData()
     {
-        // Act
         var response = await _client.GetAsync("/api/alerts");
 
-        // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await response.Content.ReadFromJsonAsync<AlertListResponse>();
@@ -76,21 +75,18 @@ public class AlertEndpointsTests : IClassFixture<TestApiFactory>
     [Fact]
     public async Task GetAlerts_WithData_ReturnsPaginatedResults()
     {
-        // Arrange, seed the in-memory database
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradeFlowDbContext>();
 
         db.Alerts.AddRange(
-            BuildEntity("id-1", "yoyomun", "TSLA", "bto", true),
-            BuildEntity("id-2", "yoyomun", "AAPL", "stc", false),
-            BuildEntity("id-3", "Fibonaccizer", "SPX", "bto", true)
+            BuildEntity("id-1", "yoyomun",     "TSLA", "bto", true),
+            BuildEntity("id-2", "yoyomun",     "AAPL", "stc", false),
+            BuildEntity("id-3", "Fibonaccizer","SPX",  "bto", true)
         );
         await db.SaveChangesAsync();
 
-        // Act
         var response = await _client.GetAsync("/api/alerts?pageSize=10");
 
-        // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await response.Content.ReadFromJsonAsync<AlertListResponse>();
@@ -102,20 +98,17 @@ public class AlertEndpointsTests : IClassFixture<TestApiFactory>
     [Fact]
     public async Task GetAlerts_FilterByUserName_ReturnsFilteredResults()
     {
-        // Arrange
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradeFlowDbContext>();
 
         db.Alerts.AddRange(
             BuildEntity("id-4", "yoyomun",     "TSLA", "bto", true),
-            BuildEntity("id-5", "Fibonaccizer", "SPX",  "bto", true)
+            BuildEntity("id-5", "Fibonaccizer","SPX",  "bto", true)
         );
         await db.SaveChangesAsync();
 
-        // Act
         var response = await _client.GetAsync("/api/alerts?userName=yoyomun");
 
-        // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await response.Content.ReadFromJsonAsync<AlertListResponse>();
@@ -123,18 +116,109 @@ public class AlertEndpointsTests : IClassFixture<TestApiFactory>
         Assert.All(body.Data, a => Assert.Equal("yoyomun", a.UserName));
     }
 
+    [Fact]
+    public async Task GetAlerts_FilterBySymbol_ReturnsFilteredResults()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TradeFlowDbContext>();
+
+        db.Alerts.AddRange(
+            BuildEntity("id-6", "yoyomun", "TSLA", "bto", true),
+            BuildEntity("id-7", "yoyomun", "AAPL", "bto", true),
+            BuildEntity("id-8", "yoyomun", "TSLA", "stc", false)
+        );
+        await db.SaveChangesAsync();
+
+        var response = await _client.GetAsync("/api/alerts?symbol=TSLA");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<AlertListResponse>();
+        Assert.NotNull(body);
+        Assert.Equal(2, body.TotalAlerts);
+        Assert.All(body.Data, a => Assert.Equal("TSLA", a.Symbol));
+    }
+
+    [Fact]
+    public async Task GetAlerts_FilterBySide_ReturnsFilteredResults()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TradeFlowDbContext>();
+
+        db.Alerts.AddRange(
+            BuildEntity("id-9",  "yoyomun", "TSLA", "bto", true),
+            BuildEntity("id-10", "yoyomun", "AAPL", "stc", false),
+            BuildEntity("id-11", "yoyomun", "SPX",  "bto", true)
+        );
+        await db.SaveChangesAsync();
+
+        var response = await _client.GetAsync("/api/alerts?side=bto");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<AlertListResponse>();
+        Assert.NotNull(body);
+        Assert.Equal(2, body.TotalAlerts);
+        Assert.All(body.Data, a => Assert.Equal("bto", a.Side));
+    }
+
+    [Fact]
+    public async Task GetAlerts_FilterByRiskApproved_ReturnsFilteredResults()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TradeFlowDbContext>();
+
+        db.Alerts.AddRange(
+            BuildEntity("id-12", "yoyomun", "TSLA", "bto", true),
+            BuildEntity("id-13", "yoyomun", "AAPL", "bto", false),
+            BuildEntity("id-14", "yoyomun", "SPX",  "bto", true)
+        );
+        await db.SaveChangesAsync();
+
+        var response = await _client.GetAsync("/api/alerts?riskApproved=true");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<AlertListResponse>();
+        Assert.NotNull(body);
+        Assert.Equal(2, body.TotalAlerts);
+        Assert.All(body.Data, a => Assert.True(a.RiskApproved));
+    }
+
+    [Fact]
+    public async Task GetAlerts_Pagination_SecondPageReturnsCorrectSubset()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TradeFlowDbContext>();
+
+        // Seed 15 alerts to test second page
+        for (int i = 0; i < 15; i++)
+            db.Alerts.Add(BuildEntity($"page-{i:D2}", "yoyomun", "TSLA", "bto", true));
+
+        await db.SaveChangesAsync();
+
+        var response = await _client.GetAsync("/api/alerts?page=2&pageSize=10");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<AlertListResponse>();
+        Assert.NotNull(body);
+        Assert.Equal(15, body.TotalAlerts);
+        Assert.Equal(5, body.Data.Count); // 15 total, page 2 of 10 = 5 remaining
+        Assert.Equal(2, body.Page);
+    }
+
     // -- Validation --
+
     [Theory]
-    [InlineData("/api/alerts?page=0",      "page")]
-    [InlineData("/api/alerts?pageSize=0",  "pageSize")]
-    [InlineData("/api/alerts?pageSize=101","pageSize")]
+    [InlineData("/api/alerts?page=0",       "page")]
+    [InlineData("/api/alerts?pageSize=0",   "pageSize")]
+    [InlineData("/api/alerts?pageSize=101", "pageSize")]
     public async Task GetAlerts_InvalidPagination_Returns400(
         string url, string expectedErrorField)
     {
-        // Act
         var response = await _client.GetAsync(url);
 
-        // Assert
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         var body = await response.Content
@@ -144,50 +228,46 @@ public class AlertEndpointsTests : IClassFixture<TestApiFactory>
     }
 
     // -- GET /api/alerts/{id} --
+
     [Fact]
     public async Task GetAlertById_ExistingId_Returns200()
     {
-        // Arrange
         using var scope = _factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<TradeFlowDbContext>();
 
         db.Alerts.Add(BuildEntity("existing-id", "yoyomun", "TSLA", "bto", true));
         await db.SaveChangesAsync();
 
-        // Act
         var response = await _client.GetAsync("/api/alerts/existing-id");
 
-        // Assert
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]
     public async Task GetAlertById_NonExistentId_Returns404()
     {
-        // Act
         var response = await _client.GetAsync("/api/alerts/does-not-exist");
 
-        // Assert
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // -- Helper Methods --
+    // -- Helpers --
+
     private static AlertEntity BuildEntity(
         string id, string userName, string symbol,
         string side, bool riskApproved) =>
         new()
         {
-            Id          = id,
-            UserName    = userName,
-            Symbol      = symbol,
-            Side        = side,
+            Id           = id,
+            UserName     = userName,
+            Symbol       = symbol,
+            Side         = side,
             RiskApproved = riskApproved,
-            RiskReason  = riskApproved ? "All rules passed" : "Rejected",
-            IngestedAt  = DateTimeOffset.UtcNow,
+            RiskReason   = riskApproved ? "All rules passed" : "Rejected",
+            IngestedAt   = DateTimeOffset.UtcNow,
             TimeOfEntryAlert = DateTimeOffset.UtcNow.AddMinutes(-5)
         };
 
-    // -- Response DTOs for deserialization --
     private record AlertListResponse(
         int TotalAlerts,
         int Page,

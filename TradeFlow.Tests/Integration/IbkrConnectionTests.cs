@@ -11,13 +11,13 @@ public class IbkrConnectionTests
     private static bool ShouldSkip =>
         Environment.GetEnvironmentVariable("SKIP_IBKR_TESTS") == "true";
 
-    private static IbkrConnectionService BuildConnectionService()
+    private static IbkrConnectionService BuildConnectionService(int clientId = 99)
     {
         var options = Options.Create(new IbkrOptions
         {
             Host = "127.0.0.1",
             Port = 4002,
-            ClientId = 99, // use a unique client ID for tests
+            ClientId = clientId,
             AccountId = Environment.GetEnvironmentVariable("IBKR__ACCOUNTID") ?? "",
             TimeoutMs = 5000
         });
@@ -27,6 +27,25 @@ public class IbkrConnectionTests
             NullLogger<IbkrConnectionService>.Instance,
             NullLogger<IbkrEWrapper>.Instance);
     }
+
+    private static IbkrBrokerService BuildBrokerService(IbkrConnectionService connection, int clientId = 99)
+    {
+        var options = Options.Create(new IbkrOptions
+        {
+            Host = "127.0.0.1",
+            Port = 4002,
+            ClientId = clientId,
+            AccountId = Environment.GetEnvironmentVariable("IBKR__ACCOUNTID") ?? "",
+            TimeoutMs = 5000
+        });
+
+        return new IbkrBrokerService(
+            connection,
+            options,
+            NullLogger<IbkrBrokerService>.Instance);
+    }
+
+    // -- Gateway running tests --
 
     [Fact]
     public void Connect_WithGatewayRunning_ReturnsTrue()
@@ -48,19 +67,7 @@ public class IbkrConnectionTests
         if (ShouldSkip) return;
 
         var connection = BuildConnectionService();
-        var options = Options.Create(new IbkrOptions
-        {
-            Host = "127.0.0.1",
-            Port = 4002,
-            ClientId = 99,
-            AccountId = Environment.GetEnvironmentVariable("IBKR__ACCOUNTID") ?? "",
-            TimeoutMs = 5000
-        });
-
-        var broker = new IbkrBrokerService(
-            connection,
-            options,
-            NullLogger<IbkrBrokerService>.Instance);
+        var broker = BuildBrokerService(connection);
 
         var balance = await broker.GetAccountBalanceAsync();
 
@@ -75,19 +82,7 @@ public class IbkrConnectionTests
         if (ShouldSkip) return;
 
         var connection = BuildConnectionService();
-        var options = Options.Create(new IbkrOptions
-        {
-            Host = "127.0.0.1",
-            Port = 4002,
-            ClientId = 99,
-            AccountId = Environment.GetEnvironmentVariable("IBKR__ACCOUNTID") ?? "",
-            TimeoutMs = 5000
-        });
-
-        var broker = new IbkrBrokerService(
-            connection,
-            options,
-            NullLogger<IbkrBrokerService>.Instance);
+        var broker = BuildBrokerService(connection);
 
         var value = await broker.GetOpenPositionsValueAsync();
 
@@ -95,6 +90,8 @@ public class IbkrConnectionTests
 
         connection.Dispose();
     }
+
+    // -- Gateway down tests --
 
     [Fact]
     public async Task GetAccountBalanceAsync_WithGatewayDown_ReturnsZero()
@@ -125,6 +122,65 @@ public class IbkrConnectionTests
 
         // Should return 0 gracefully rather than throwing
         balance.Should().Be(0);
+
+        connection.Dispose();
+    }
+
+    [Fact]
+    public async Task GetOpenPositionsValueAsync_WithGatewayDown_ReturnsZero()
+    {
+        if (ShouldSkip) return;
+
+        var options = Options.Create(new IbkrOptions
+        {
+            Host = "127.0.0.1",
+            Port = 9999,
+            ClientId = 99,
+            AccountId = "",
+            TimeoutMs = 2000
+        });
+
+        var connection = new IbkrConnectionService(
+            options,
+            NullLogger<IbkrConnectionService>.Instance,
+            NullLogger<IbkrEWrapper>.Instance);
+
+        var broker = new IbkrBrokerService(
+            connection,
+            options,
+            NullLogger<IbkrBrokerService>.Instance);
+
+        var value = await broker.GetOpenPositionsValueAsync();
+
+        // Should return 0 gracefully rather than throwing
+        value.Should().Be(0);
+
+        connection.Dispose();
+    }
+
+    [Fact]
+    public void Connect_WithGatewayDown_ReturnsFalse()
+    {
+        if (ShouldSkip) return;
+
+        var options = Options.Create(new IbkrOptions
+        {
+            Host = "127.0.0.1",
+            Port = 9999,
+            ClientId = 99,
+            AccountId = "",
+            TimeoutMs = 2000
+        });
+
+        var connection = new IbkrConnectionService(
+            options,
+            NullLogger<IbkrConnectionService>.Instance,
+            NullLogger<IbkrEWrapper>.Instance);
+
+        var connected = connection.Connect();
+
+        connected.Should().BeFalse();
+        connection.IsConnected.Should().BeFalse();
 
         connection.Dispose();
     }

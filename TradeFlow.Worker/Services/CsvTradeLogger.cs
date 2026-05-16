@@ -59,7 +59,11 @@ public class CsvTradeLogger
         try
         {
             var path = GetPath(trade.TradeType);
-            var row  = BuildOpenRow(trade);
+
+            // Strip summary block before appending so the new row lands before it
+            await StripSummaryAsync(path, ct);
+
+            var row = BuildOpenRow(trade);
             await AppendRowAsync(path, row, ct);
             await UpdateSummaryAsync(path, trade.TradeType, ct);
 
@@ -205,6 +209,16 @@ public class CsvTradeLogger
     private async Task AppendRowAsync(string path, string row, CancellationToken ct)
     {
         await File.AppendAllTextAsync(path, row + Environment.NewLine, ct);
+    }
+
+    // Removes the summary block from the end of the file before writing new rows
+    private static async Task StripSummaryAsync(string path, CancellationToken ct)
+    {
+        var lines = (await File.ReadAllLinesAsync(path, ct)).ToList();
+        var summaryStart = lines.FindIndex(l => l.StartsWith(",,SUMMARY"));
+        if (summaryStart >= 0)
+            lines = lines.Take(summaryStart).ToList();
+        await File.WriteAllLinesAsync(path, lines, ct);
     }
 
     // Reads the file, finds the row matching trade.OrderId, replaces it, rewrites the file

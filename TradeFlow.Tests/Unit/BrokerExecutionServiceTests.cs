@@ -29,6 +29,17 @@ public class BrokerExecutionServiceTests
                 FillAmount: 990m,
                 Status: OrderStatus.Filled,
                 FilledAt: DateTimeOffset.UtcNow));
+        _brokerMock.Setup(b => b.ClosePositionAsync(
+                It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "CLOSE-001",
+                StopOrderId: null,
+                TargetOrderId: null,
+                FillPrice: 9.90m,
+                FillQuantity: 2,
+                FillAmount: 1_980m,
+                Status: OrderStatus.Filled,
+                FilledAt: DateTimeOffset.UtcNow));
 
         _guard = new TradeGuard(_brokerMock.Object, NullLogger<TradeGuard>.Instance);
 
@@ -49,11 +60,12 @@ public class BrokerExecutionServiceTests
         string direction = "call",
         decimal? pricePaid = 4.95m,
         string? contractSymbol = "TSLA260620C00450000",
-        decimal? strike = 450) =>
+        decimal? strike = 450,
+        string userName = "TestTrader") =>
         new(
             Id: Guid.NewGuid().ToString(),
             UserId: null,
-            UserName: "TestTrader",
+            UserName: userName,
             Symbol: "TSLA",
             Type: type,
             Direction: direction,
@@ -67,7 +79,7 @@ public class BrokerExecutionServiceTests
             ActualPriceAtTimeOfAlert: pricePaid,
             ActualPriceAtTimeOfExit: null,
             PricePaid: pricePaid,
-            PriceAtExit: null,
+            PriceAtExit: 9.90m,
             HighestPrice: null,
             LowestPrice: null,
             LastCheckedPrice: null,
@@ -121,6 +133,84 @@ public class BrokerExecutionServiceTests
         var alert = BuildAlert(side: "stc");
 
         await _execution.HandleExitAsync(alert);
+
+        _brokerMock.Verify(b => b.ClosePositionAsync(
+            It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleExitAsync_ClosesWhenOpenPositionExists()
+    {
+        // Pre-register an open trade in TradeGuard to simulate an existing position
+        var order = new TradeOrder(
+            AlertId: Guid.NewGuid().ToString(),
+            UserName: "TestTrader",
+            Symbol: "TSLA",
+            TradeType: TradeType.Options,
+            OptionsContractSymbol: "TSLA260620C00450000",
+            Direction: "call",
+            Strike: 450,
+            Expiration: "2026-06-20",
+            Quantity: 2,
+            EstimatedEntryPrice: 4.95m,
+            BudgetUsed: 990m,
+            StopPrice: 2.48m,
+            TargetPrice: 14.85m);
+
+        var result = new BrokerOrderResult(
+            OrderId: "ORDER-001",
+            StopOrderId: "STOP-001",
+            TargetOrderId: "TGT-001",
+            FillPrice: 4.95m,
+            FillQuantity: 2,
+            FillAmount: 990m,
+            Status: OrderStatus.Filled,
+            FilledAt: DateTimeOffset.UtcNow);
+
+        _guard.RegisterOpen(order, result);
+
+        // Send an exit alert for the same trader + contract
+        var exitAlert = BuildAlert(side: "stc", userName: "TestTrader");
+        await _execution.HandleExitAsync(exitAlert);
+
+        _brokerMock.Verify(b => b.ClosePositionAsync(
+            It.Is<TradeRecord>(t => t.Symbol == "TSLA"),
+            TradeOutcome.XtradesExit,
+            default), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleExitAsync_SkipsWhenTraderMismatch()
+    {
+        // Register a trade under one trader
+        var order = new TradeOrder(
+            AlertId: Guid.NewGuid().ToString(),
+            UserName: "TestTrader",
+            Symbol: "TSLA",
+            TradeType: TradeType.Options,
+            OptionsContractSymbol: "TSLA260620C00450000",
+            Direction: "call",
+            Strike: 450,
+            Expiration: "2026-06-20",
+            Quantity: 2,
+            EstimatedEntryPrice: 4.95m,
+            BudgetUsed: 990m,
+            StopPrice: 2.48m,
+            TargetPrice: 14.85m);
+
+        _guard.RegisterOpen(order, new BrokerOrderResult(
+            OrderId: "ORDER-001",
+            StopOrderId: "STOP-001",
+            TargetOrderId: "TGT-001",
+            FillPrice: 4.95m,
+            FillQuantity: 2,
+            FillAmount: 990m,
+            Status: OrderStatus.Filled,
+            FilledAt: DateTimeOffset.UtcNow));
+
+        // Exit alert from a different trader — should not close
+        var exitAlert = BuildAlert(side: "stc", userName: "DifferentTrader");
+        await _execution.HandleExitAsync(exitAlert);
 
         _brokerMock.Verify(b => b.ClosePositionAsync(
             It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default), Times.Never);
