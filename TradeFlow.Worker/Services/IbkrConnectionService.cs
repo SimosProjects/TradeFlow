@@ -11,7 +11,7 @@ public class IbkrConnectionService : IDisposable
     private readonly ILogger<IbkrConnectionService> _logger;
     private readonly EClientSocket _client;
     private readonly IbkrEWrapper _wrapper;
-    private readonly EReaderSignal  _signal;
+    private readonly EReaderSignal _signal;
 
     private bool _connected = false;
 
@@ -27,6 +27,14 @@ public class IbkrConnectionService : IDisposable
         _wrapper = new IbkrEWrapper(wrapperLogger);
         _signal  = new EReaderMonitorSignal();
         _client  = new EClientSocket(_wrapper, _signal);
+
+        // When Gateway drops the connection, update _connected so IsConnected
+        // reflects the real state immediately without waiting for the next API call
+        _wrapper.SetConnectionClosedCallback(() =>
+        {
+            _connected = false;
+            _logger.LogWarning("IB Gateway connection closed unexpectedly.");
+        });
     }
 
     /// <summary>
