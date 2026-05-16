@@ -118,6 +118,11 @@ builder.Services.AddSingleton<BrokerExecutionService>();
 // Register Ibkr connection
 builder.Services.AddSingleton<IbkrConnectionService>();
 
+// Register IbkrBrokerService, not active yet, swap with the one below when ready for paper trading
+builder.Services.AddSingleton<IbkrBrokerService>();
+// Active broker, swap to IbkrBrokerService when IB Gateway is confirmed working
+//builder.Services.AddSingleton<IBrokerService, NullBrokerService>();
+
 // Register the csv trade logger for tracking
 builder.Services.AddSingleton<CsvTradeLogger>();
 
