@@ -29,7 +29,11 @@ public class IbkrConnectionService : IDisposable
         _client  = new EClientSocket(_wrapper, _signal);
     }
 
-    // Connect to IB Gateway, must be called before any API calls
+    /// <summary>
+    /// Connects to IB Gateway via the TWS socket API. Must be called before any broker API calls.
+    /// Starts the EReader message processing thread on successful connection.
+    /// </summary>
+    /// <returns>True if connected successfully, false otherwise.</returns>
     public bool Connect()
     {
         if (IsConnected)
@@ -81,6 +85,9 @@ public class IbkrConnectionService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Disconnects from IB Gateway and resets the connection state.
+    /// </summary>
     public void Disconnect()
     {
         if (_client.IsConnected())

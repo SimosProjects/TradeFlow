@@ -64,7 +64,12 @@ public class DiscordNotificationService
         }
     }
 
-    // Called after a broker order is placed, shows fill details and bracket prices
+    /// <summary>
+    /// Posts an order placed notification to Discord showing fill details and bracket prices.
+    /// Silently skips if the webhook URL is not configured.
+    /// </summary>
+    /// <param name="trade">The trade record with fill details.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task NotifyOrderPlacedAsync(
         TradeRecord trade,
         CancellationToken cancellationToken = default)
@@ -103,7 +108,12 @@ public class DiscordNotificationService
         }
     }
 
-    // Called when a position closes, shows P&L result
+    /// <summary>
+    /// Posts a position closed notification to Discord showing the P&amp;L result.
+    /// Silently skips if the webhook URL is not configured.
+    /// </summary>
+    /// <param name="trade">The closed trade record with P&amp;L populated.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task NotifyPositionClosedAsync(
         TradeRecord trade,
         CancellationToken cancellationToken = default)

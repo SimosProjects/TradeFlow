@@ -2,9 +2,11 @@ using TradeFlow.Worker.Models;
 
 namespace TradeFlow.Worker.Services;
 
-// No-op broker used during development and testing.
-// Logs what it would do and returns simulated fills.
-// Swap for IbkrBrokerService in Program.cs when IBKR account is ready.
+/// <summary>
+/// No-op broker used during development and testing. Logs what it would do
+/// and returns simulated fills without placing any real orders.
+/// Swap for <see cref="IbkrBrokerService"/> in Program.cs when IBKR is ready.
+/// </summary>
 public class NullBrokerService : IBrokerService
 {
     private readonly ILogger<NullBrokerService> _logger;
@@ -14,6 +16,12 @@ public class NullBrokerService : IBrokerService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Simulates placing a bracket order and returns a fake fill at the alert price.
+    /// </summary>
+    /// <param name="order">The trade order to simulate.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A simulated <see cref="BrokerOrderResult"/> with <see cref="OrderStatus.Simulated"/>.</returns>
     public Task<BrokerOrderResult> PlaceOrderAsync(
         TradeOrder order,
         CancellationToken cancellationToken = default)
@@ -33,18 +41,25 @@ public class NullBrokerService : IBrokerService
             order.BudgetUsed);
 
         var result = new BrokerOrderResult(
-            OrderId:       orderId,
-            StopOrderId:   $"NULL-STOP-{Guid.NewGuid():N}"[..16],
+            OrderId: orderId,
+            StopOrderId: $"NULL-STOP-{Guid.NewGuid():N}"[..16],
             TargetOrderId: $"NULL-TGT-{Guid.NewGuid():N}"[..15],
-            FillPrice:     order.EstimatedEntryPrice,
-            FillQuantity:  order.Quantity,
-            FillAmount:    order.BudgetUsed,
-            Status:        OrderStatus.Simulated,
-            FilledAt:      DateTimeOffset.UtcNow);
+            FillPrice: order.EstimatedEntryPrice,
+            FillQuantity: order.Quantity,
+            FillAmount: order.BudgetUsed,
+            Status: OrderStatus.Simulated,
+            FilledAt: DateTimeOffset.UtcNow);
 
         return Task.FromResult(result);
     }
 
+    /// <summary>
+    /// Simulates closing a position and returns a fake fill at 10% above entry.
+    /// </summary>
+    /// <param name="trade">The trade record to simulate closing.</param>
+    /// <param name="outcome">The reason for closing.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A simulated <see cref="BrokerOrderResult"/> with <see cref="OrderStatus.Simulated"/>.</returns>
     public Task<BrokerOrderResult> ClosePositionAsync(
         TradeRecord trade,
         TradeOutcome outcome,
@@ -57,22 +72,25 @@ public class NullBrokerService : IBrokerService
             outcome);
 
         // Simulate a 10% gain for testing the CSV and Discord flow
-        var simulatedExitPrice  = trade.EntryPrice  * 1.10m;
+        var simulatedExitPrice = trade.EntryPrice * 1.10m;
         var simulatedExitAmount = trade.EntryAmount * 1.10m;
 
         var result = new BrokerOrderResult(
-            OrderId:       $"NULL-CLOSE-{Guid.NewGuid():N}"[..17],
-            StopOrderId:   null,
+            OrderId: $"NULL-CLOSE-{Guid.NewGuid():N}"[..17],
+            StopOrderId: null,
             TargetOrderId: null,
-            FillPrice:     simulatedExitPrice,
-            FillQuantity:  trade.Quantity,
-            FillAmount:    simulatedExitAmount,
-            Status:        OrderStatus.Simulated,
-            FilledAt:      DateTimeOffset.UtcNow);
+            FillPrice: simulatedExitPrice,
+            FillQuantity: trade.Quantity,
+            FillAmount: simulatedExitAmount,
+            Status: OrderStatus.Simulated,
+            FilledAt: DateTimeOffset.UtcNow);
 
         return Task.FromResult(result);
     }
 
+    /// <summary>
+    /// Returns a simulated account balance of $100,000.
+    /// </summary>
     public Task<decimal> GetAccountBalanceAsync(
         CancellationToken cancellationToken = default)
     {
@@ -80,6 +98,9 @@ public class NullBrokerService : IBrokerService
         return Task.FromResult(100_000m);
     }
 
+    /// <summary>
+    /// Returns a simulated open positions value of $0.
+    /// </summary>
     public Task<decimal> GetOpenPositionsValueAsync(
         CancellationToken cancellationToken = default)
     {

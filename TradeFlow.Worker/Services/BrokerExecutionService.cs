@@ -3,45 +3,53 @@ using TradeFlow.Worker.Models;
 
 namespace TradeFlow.Worker.Services;
 
-// Shared broker execution logic called by both AlertPollingService and SignalRListenerService.
-// Handles order placement for approved BTO entries and position closing for STC/BTC exits.
+/// <summary>
+/// Shared broker execution logic called by both AlertPollingService and SignalRListenerService.
+/// Handles order placement for approved BTO entries and position closing for STC/BTC exits.
+/// </summary>
 public class BrokerExecutionService
 {
-    private readonly IBrokerService          _broker;
-    private readonly PositionSizer           _sizer;
-    private readonly TradeGuard              _guard;
-    private readonly CsvTradeLogger          _csv;
+    private readonly IBrokerService _broker;
+    private readonly PositionSizer _sizer;
+    private readonly TradeGuard _guard;
+    private readonly CsvTradeLogger _csv;
     private readonly DiscordNotificationService _discord;
     private readonly ILogger<BrokerExecutionService> _logger;
 
     public BrokerExecutionService(
-        IBrokerService               broker,
-        PositionSizer                sizer,
-        TradeGuard                   guard,
-        CsvTradeLogger               csv,
-        DiscordNotificationService   discord,
+        IBrokerService broker,
+        PositionSizer sizer,
+        TradeGuard guard,
+        CsvTradeLogger csv,
+        DiscordNotificationService discord,
         ILogger<BrokerExecutionService> logger)
     {
-        _broker  = broker;
-        _sizer   = sizer;
-        _guard   = guard;
-        _csv     = csv;
+        _broker = broker;
+        _sizer = sizer;
+        _guard = guard;
+        _csv = csv;
         _discord = discord;
-        _logger  = logger;
+        _logger = logger;
     }
 
-    // Called after risk engine approves a BTO entry alert
+    /// <summary>
+    /// Handles a BTO or averaging entry alert by sizing the order, running safety checks,
+    /// placing the order with the broker, and logging the result to CSV and Discord.
+    /// Skips silently if the market is closed or any safety check fails.
+    /// </summary>
+    /// <param name="alert">The approved alert to act on.</param>
+    /// <param name="classification">The alert classification from the risk engine.</param>
+    /// <param name="isAverage">True if this is an averaging order on an existing position.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task HandleEntryAsync(
         Alert alert,
         AlertClassification classification,
         bool isAverage = false,
         CancellationToken ct = default)
     {
-        // Never place orders outside regular market hours
         if (!IsMarketOpen())
         {
-            _logger.LogDebug(
-                "Market closed — skipping order for {Symbol}", alert.Symbol);
+            _logger.LogDebug("Market closed, skipping order for {Symbol}", alert.Symbol);
             return;
         }
 
@@ -49,17 +57,16 @@ public class BrokerExecutionService
         if (order is null)
         {
             _logger.LogWarning(
-                "PositionSizer returned null for {Symbol} — price may be missing or quantity < 1",
+                "PositionSizer returned null for {Symbol}, price may be missing or quantity < 1",
                 alert.Symbol);
             return;
         }
 
-        // Run all safety checks before placing any order
         var blocked = await _guard.CheckAsync(order, ct);
         if (blocked is not null)
         {
             _logger.LogWarning(
-                "TradeGuard blocked order for {Symbol} — {Reason}",
+                "TradeGuard blocked order for {Symbol}: {Reason}",
                 alert.Symbol, blocked);
             return;
         }
@@ -72,14 +79,14 @@ public class BrokerExecutionService
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Broker PlaceOrderAsync failed for {Symbol} — skipping", alert.Symbol);
+                "Broker PlaceOrderAsync failed for {Symbol}, skipping", alert.Symbol);
             return;
         }
 
         if (result.Status == OrderStatus.Rejected || result.Status == OrderStatus.Cancelled)
         {
             _logger.LogWarning(
-                "Broker rejected order for {Symbol} — status: {Status}", alert.Symbol, result.Status);
+                "Broker rejected order for {Symbol}, status: {Status}", alert.Symbol, result.Status);
             return;
         }
 
@@ -100,7 +107,13 @@ public class BrokerExecutionService
         await _discord.NotifyOrderPlacedAsync(trade, ct);
     }
 
-    // Called when a side:stc or side:btc exit alert arrives from the same trader + contract
+    /// <summary>
+    /// Handles a STC or BTC exit alert by matching it to an open position, closing
+    /// the position with the broker, and updating the CSV and Discord with the P&amp;L result.
+    /// Skips silently if no matching open position is found.
+    /// </summary>
+    /// <param name="alert">The exit alert to act on.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task HandleExitAsync(
         Alert alert,
         CancellationToken ct = default)
@@ -113,12 +126,12 @@ public class BrokerExecutionService
         if (trade is null)
         {
             _logger.LogDebug(
-                "Exit alert for {Symbol} — no matching open position, skipping broker close",
+                "Exit alert for {Symbol}, no matching open position found",
                 alert.Symbol);
             return;
         }
 
-        // Use the exit price from the alert if available, otherwise use last known price
+        // Use the exit price from the alert if available, otherwise fall back to last known price
         var exitPrice = alert.PriceAtExit ?? alert.LastCheckedPrice ?? trade.EntryPrice;
 
         BrokerOrderResult closeResult;
@@ -129,7 +142,7 @@ public class BrokerExecutionService
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "Broker ClosePositionAsync failed for {Symbol} — skipping", alert.Symbol);
+                "Broker ClosePositionAsync failed for {Symbol}, skipping", alert.Symbol);
             return;
         }
 
@@ -153,10 +166,10 @@ public class BrokerExecutionService
         await _discord.NotifyPositionClosedAsync(closedTrade, ct);
     }
 
-    // Returns true if current time is within regular market hours (9:30am-4:00pm ET, Mon-Fri)
+    // Returns true if the current time falls within regular market hours (9:30am to 4:00pm ET, Mon-Fri)
     private static bool IsMarketOpen()
     {
-        var et    = TimeZoneInfo.ConvertTime(
+        var et = TimeZoneInfo.ConvertTime(
             DateTimeOffset.UtcNow,
             TimeZoneInfo.FindSystemTimeZoneById("America/New_York"));
 
@@ -165,6 +178,6 @@ public class BrokerExecutionService
 
         var timeOfDay = et.TimeOfDay;
         return timeOfDay >= new TimeSpan(9, 30, 0)
-            && timeOfDay <  new TimeSpan(16, 0, 0);
+            && timeOfDay < new TimeSpan(16, 0, 0);
     }
 }
