@@ -179,7 +179,11 @@ public class IbkrBrokerService : IBrokerService
         var tcs = _connection.Wrapper.RegisterOrderCallback(orderId);
         var contract = BuildContract(order);
         var parentOrder = BuildMarketOrder(orderId, order.Quantity, "BUY");
-        var stopOrder = BuildStopOrder(orderId + 1, orderId, order.Quantity, (double)order.StopPrice);
+
+        // Options trail at 50%, stocks trail at 15%
+        var trailPercent = order.TradeType == TradeType.Options ? 50.0 : 15.0;
+
+        var stopOrder = BuildTrailingStopOrder(orderId + 1, orderId, order.Quantity, trailPercent);
         var targetOrder = BuildLimitOrder(orderId + 2, orderId, order.Quantity, (double)order.TargetPrice);
 
         // Transmit=false on parent and stop so all three submit together when target is placed
@@ -404,14 +408,17 @@ public class IbkrBrokerService : IBrokerService
             Transmit = false,
         };
 
-    private static Order BuildStopOrder(int orderId, int parentId, int quantity, double stopPrice) =>
+    // Builds a trailing stop order. TrailPercent trails by a percentage of the current price
+    // rather than a fixed price, so the stop moves up as the position becomes profitable.
+    private static Order BuildTrailingStopOrder(
+        int orderId, int parentId, int quantity, double trailPercent) =>
         new()
         {
             OrderId = orderId,
             ParentId = parentId,
             Action = "SELL",
-            OrderType = "STP",
-            AuxPrice = stopPrice,
+            OrderType = "TRAIL",
+            TrailingPercent = trailPercent,
             TotalQuantity = quantity,
             Transmit = false,
         };
