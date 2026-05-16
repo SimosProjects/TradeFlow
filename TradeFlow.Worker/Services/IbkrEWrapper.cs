@@ -57,7 +57,11 @@ public class IbkrEWrapper : EWrapper
         }
     }
 
-    // Register a callback to await order status
+    /// <summary>
+    /// Registers a callback that resolves when IBKR confirms the order status for the given order ID.
+    /// </summary>
+    /// <param name="orderId">The order ID to watch for.</param>
+    /// <returns>A <see cref="TaskCompletionSource{T}"/> that completes when the status arrives.</returns>
     public TaskCompletionSource<OrderState> RegisterOrderCallback(int orderId)
     {
         var tcs = new TaskCompletionSource<OrderState>();
@@ -65,7 +69,11 @@ public class IbkrEWrapper : EWrapper
         return tcs;
     }
 
-    // Register a callback to await account summary
+    /// <summary>
+    /// Registers a callback that resolves when IBKR returns the account summary value for the given request ID.
+    /// </summary>
+    /// <param name="reqId">The request ID to watch for.</param>
+    /// <returns>A <see cref="TaskCompletionSource{T}"/> that completes when the value arrives.</returns>
     public TaskCompletionSource<string> RegisterAccountCallback(int reqId)
     {
         var tcs = new TaskCompletionSource<string>();

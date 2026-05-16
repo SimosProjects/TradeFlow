@@ -48,7 +48,11 @@ public class CsvTradeLogger
         EnsureHeadersExist();
     }
 
-    // Called when a new position is opened and appends a row with Status=Open
+    /// <summary>
+    /// Appends a new open trade row to the appropriate CSV file and updates the summary.
+    /// </summary>
+    /// <param name="trade">The trade record to log.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task OpenTradeAsync(TradeRecord trade, CancellationToken ct = default)
     {
         var semaphore = GetSemaphore(trade.TradeType);
@@ -70,7 +74,11 @@ public class CsvTradeLogger
         }
     }
 
-    // Called when a position closes and finds the row by OrderId and rewrites it with exit data
+    /// <summary>
+    /// Finds the matching open row by symbol and rewrites it with exit data, then updates the summary.
+    /// </summary>
+    /// <param name="trade">The closed trade record with exit data populated.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task CloseTradeAsync(TradeRecord trade, CancellationToken ct = default)
     {
         var semaphore = GetSemaphore(trade.TradeType);

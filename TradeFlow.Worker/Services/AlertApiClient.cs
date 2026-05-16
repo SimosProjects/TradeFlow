@@ -3,12 +3,9 @@ using System.Text.Json;
 namespace TradeFlow.Worker.Services;
 
 /// <summary>
-/// Thin HTTP client for the Xtrades alerts endpoint.
-/// Fetch and deserialize alerts only.
-///
-/// HttpClient is injected by IHttpClientFactory, base address, auth headers,
-/// and resilience policies (retry, circuit breaker, timeout) are configured
-/// in Program.cs via AddHttpClient and AddStandardResilienceHandler.
+/// Thin HTTP client for the Xtrades alerts endpoint. Fetches and deserializes alerts only.
+/// The HttpClient is injected by IHttpClientFactory with base address, auth headers,
+/// and resilience policies configured in Program.cs.
 /// </summary>
 public class AlertApiClient : IAlertApiClient
 {
