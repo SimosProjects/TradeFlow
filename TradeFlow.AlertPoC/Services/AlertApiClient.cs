@@ -12,7 +12,7 @@ public class AlertApiClient : IAlertApiClient
 {
     private readonly HttpClient _httpClient;
 
-    // Hardcoded for the POC. In the Worker Service this will move to
+    // Hardcoded for the POC. In the Worker Service this moves to
     // IOptions<XtradesOptions> so values are configurable per environment.
     private const string AlertsUrl =
         "https://app.xtrades.net/api/v2/alerts" +
@@ -25,20 +25,18 @@ public class AlertApiClient : IAlertApiClient
 
     public AlertApiClient(string token)
     {
-        // Defensive check - fail loudly at construction rather than getting
-        // a cryptic 401 on the first request with no indication why
+        // Fail loudly at construction rather than getting a cryptic 401 on the first request
         ArgumentException.ThrowIfNullOrWhiteSpace(token, nameof(token));
 
         _httpClient = new HttpClient();
 
-        // Bearer token auth — Xtrades uses JWT issued by their frontend.
-        // Token is read from environment, never from source control.
+        // Bearer token auth. Token is read from environment, never from source control.
         _httpClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", token);
         _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 
-        // Generous timeout for the POC — the Worker Service will use
-        // CancellationToken with a tighter per-request deadline instead.
+        // Generous timeout for the POC. The Worker Service uses CancellationToken
+        // with a tighter per-request deadline instead.
         _httpClient.Timeout = TimeSpan.FromSeconds(15);
     }
 
@@ -46,10 +44,13 @@ public class AlertApiClient : IAlertApiClient
     /// Fetches the most recent alerts from the Xtrades API.
     /// Throws <see cref="AlertApiException"/> for any network, HTTP, or
     /// deserialization failure so callers don't need to know the HTTP details.
-    /// Pass a CancellationToken to support cooperative cancellation —
-    /// the token is propagated to every async operation in the chain.
     /// </summary>
-    public async Task<List<Alert>> GetAlertsAsync(CancellationToken cancellationToken)
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <param name="pageSize">Number of alerts to fetch. Ignored in the POC, hardcoded URL is used.</param>
+    /// <returns>List of alerts, or an empty list if none are available.</returns>
+    public async Task<List<Alert>> GetAlertsAsync(
+        CancellationToken cancellationToken = default,
+        int pageSize = 10)
     {
         HttpResponseMessage response;
 
@@ -75,12 +76,11 @@ public class AlertApiClient : IAlertApiClient
                 $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
         }
 
-        var json = await response.Content.ReadAsStringAsync();
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
 
         AlertsResponse? result;
         try
         {
-            // Case-insensitive matching handles any casing drift in the API response
             result = JsonSerializer.Deserialize<AlertsResponse>(json,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         }
@@ -89,8 +89,7 @@ public class AlertApiClient : IAlertApiClient
             throw new AlertApiException($"Failed to deserialize response: {ex.Message}", ex);
         }
 
-        // Coalesce across the three candidate field names — whichever is populated wins.
-        // Empty list rather than null keeps callers free of null checks.
+        // Coalesce across the three candidate field names, whichever is populated wins
         return result?.Alerts ?? result?.Data ?? result?.Items ?? [];
     }
 }

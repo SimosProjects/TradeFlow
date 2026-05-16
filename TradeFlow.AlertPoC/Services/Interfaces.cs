@@ -7,7 +7,7 @@ namespace TradeFlow.AlertPoC.Services;
 /// </summary>
 public interface IAlertApiClient
 {
-    Task<List<Alert>> GetAlertsAsync(CancellationToken cancellationToken = default);
+    Task<List<Alert>> GetAlertsAsync(CancellationToken cancellationToken = default, int pageSize = 10);
 }
 
 /// <summary>
