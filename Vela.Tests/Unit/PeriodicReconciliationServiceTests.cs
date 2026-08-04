@@ -219,8 +219,8 @@ public class PeriodicReconciliationServiceTests : IDisposable
         var startupMethod = typeof(StartupReconciliationService).GetMethod(
             "BuildManualPosition", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        var periodicResult = (OpenPosition)periodicMethod.Invoke(null, [ibkrPos])!;
-        var startupResult  = (OpenPosition)startupMethod.Invoke(null, [ibkrPos])!;
+        var periodicResult = (OpenPosition)periodicMethod.Invoke(null, [ibkrPos, null])!;
+        var startupResult  = (OpenPosition)startupMethod.Invoke(null, [ibkrPos, null])!;
 
         periodicResult.EntryPrice.Should().Be(startupResult.EntryPrice);
         periodicResult.EntryAmount.Should().Be(startupResult.EntryAmount);
@@ -241,8 +241,8 @@ public class PeriodicReconciliationServiceTests : IDisposable
         var startupMethod = typeof(StartupReconciliationService).GetMethod(
             "BuildManualPosition", BindingFlags.NonPublic | BindingFlags.Static)!;
 
-        var periodicResult = (OpenPosition)periodicMethod.Invoke(null, [ibkrPos])!;
-        var startupResult  = (OpenPosition)startupMethod.Invoke(null, [ibkrPos])!;
+        var periodicResult = (OpenPosition)periodicMethod.Invoke(null, [ibkrPos, null])!;
+        var startupResult  = (OpenPosition)startupMethod.Invoke(null, [ibkrPos, null])!;
 
         periodicResult.EntryPrice.Should().Be(startupResult.EntryPrice).And.Be(250.00m);
         periodicResult.EntryAmount.Should().Be(startupResult.EntryAmount).And.Be(2500.00m);
