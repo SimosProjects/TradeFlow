@@ -1,19 +1,1 @@
 Date Opened,Time Opened,Date Closed,Time Closed,Symbol,Contract,Direction,Strike,Expiration,Contracts,Entry Price,Entry Amount,Entry Latency (ms),Entry Slippage %,Exit Price,Exit Amount,Exit Latency (ms),Exit Slippage %,Status,Result,UserName,XScore,DiscordRank,P&L,P&L %,OrderId
-2026-07-15,10:42:40,,,NFLX,NFLX261016C00090000,call,90,Oct 16 2026,4,2.34,936.00,12811,+4.00%,,,,,Open,Open,Krazy 👶 🐐,77,Top Analyst XIV,,,11361
-2026-07-15,13:11:06,,,ORCL,ORCL270115C00200000,call,200,Jan 15 2027,2,8.55,1710.00,3362,-25.65%,,,,,Open,Open,Krazy 👶 🐐,77,Top Analyst XIV,,,11503
-2026-07-15,13:53:59,,,DRAM,DRAM260918C00070000,call,70,Sep 18 2026,6,4.80,2880.00,8655,+2.13%,,,,,Open,Open,Krazy 👶 🐐,77,Top Analyst XIV,,,11513
-2026-07-16,15:20:24,,,ARKK,ARKK260828C00080000,call,80,Aug 28 2026,10,2.91,2910.00,3721,+6.20%,,,,,Open,Open,tancorman,92,,,,11933
-2026-07-17,09:34:29,,,TSLA,TSLA260724C00385000,call,385,Jul 24 2026,1,12.85,1285.00,5139,+1.50%,,,,,Open,Open,Sean@BearishBull,84,,,,11964
-2026-07-17,09:36:32,,,ISRG,ISRG270319C00400000,call,400,Mar 19 2027,1,38.30,3830.00,14651,+9.43%,,,,,Open,Open,svjugs,80,Contributor II,,,11974
-2026-07-17,09:49:55,,,ASTS,ASTS270115C00055000,call,55,Jan 15 2027,1,17.35,1735.00,14500,+2.66%,,,,,Open,Open,svjugs,80,Contributor II,,,12024
-2026-07-17,10:05:52,,,BE,BE270115C00250000,call,250,Jan 15 2027,1,65.00,6500.00,4704,+9.08%,,,,,Open,Open,svjugs,80,Contributor II,,,12084
-2026-07-17,10:15:13,,,NOW,NOW260724C00105000,call,105,Jul 24 2026,3,5.85,1755.00,11250,+2.27%,,,,,Open,Open,Sean@BearishBull,84,,,,12094
-2026-07-17,10:41:16,,,AMZN,AMZN260724C00250000,call,250,Jul 24 2026,2,4.95,990.00,9813,+6.45%,,,,,Open,Open,Fibonaccizer,61,Top Analyst XIV,,,12194
-2026-07-17,11:45:57,,,IWM,IWM260828P00275000,put,275,Aug 28 2026,4,2.58,1032.00,3324,+2.79%,,,,,Open,Open,Theo,81,Top Analyst VIII,,,12344
-2026-07-17,15:00:19,,,SPY,SPY260720C00745000,call,745,Jul 20 2026,9,2.50,2250.00,3035,+2.46%,,,,,Open,Open,tancorman,92,,,,12484
-
-,,SUMMARY
-,,Total Trades,12
-,,Open,12,Closed,0
-,,Wins,0,Losses,0,Win Rate,0.0%
-,,Total P&L,+0.00

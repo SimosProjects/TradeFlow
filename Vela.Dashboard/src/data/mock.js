@@ -159,6 +159,7 @@ export const MOCK = {
     xtradesConnected: true,
     workerRunning: true,
     marketOpen: true,
+    allowOptions: true,
     lastHeartbeat: '11:24:02 ET',
     lastAlert: '11:05 ET',
     accountMode: 'Paper Trading',

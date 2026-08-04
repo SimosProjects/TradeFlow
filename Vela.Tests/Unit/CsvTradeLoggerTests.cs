@@ -138,6 +138,26 @@ public class CsvTradeLoggerTests : IDisposable
         content.Should().Contain(trade.OrderId);
     }
 
+    [Fact]
+    public async Task OpenTradeAsync_FileDeletedOnDisk_RecreatesHeaderAndWritesTrade()
+    {
+        var path = Path.Combine(_tempDir, "options_trades.csv");
+        File.Delete(path);
+        File.Exists(path).Should().BeFalse();
+
+        var trade = BuildOpenOptionsTrade();
+        await _logger.OpenTradeAsync(trade);
+
+        var lines = await File.ReadAllLinesAsync(path);
+        lines[0].Should().Contain("Symbol");
+        lines[0].Should().Contain("OrderId");
+
+        var tradeRow = lines.First(l =>
+            l.Contains("TSLA") && !l.StartsWith(",,") && l != lines[0]);
+        tradeRow.Should().Contain("TSLA");
+        tradeRow.Should().Contain("Open");
+    }
+
     // -- CloseTrade tests --
 
     [Fact]

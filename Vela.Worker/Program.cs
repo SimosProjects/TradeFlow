@@ -105,6 +105,7 @@ builder.Services.AddSingleton(sp =>
     var rules = new List<IRiskRule>
     {
         new EntryOnlyRule(),
+        new AllowOptionsRule(riskOptions.AllowOptions),
         new ApprovedOrHighScoreRule(riskOptions.ApprovedTraders, riskOptions.MinXScore),
         new NoHighRiskRule(() => regime.BlockHigh),
         new NoLottoRule(() => regime.BlockLotto),
@@ -128,6 +129,7 @@ builder.Services.AddSingleton<DiscordNotificationService>();
 builder.Services.AddScoped<IAlertRepository, AlertRepository>();
 builder.Services.AddScoped<IOpenPositionRepository, OpenPositionRepository>();
 builder.Services.AddScoped<ITradeMetricsRepository, TradeMetricsRepository>();
+builder.Services.AddScoped<GhostPositionCloseOutService>();
 builder.Services.AddSingleton(sp =>
     new PositionSizer(
         sp.GetRequiredService<IOptions<RiskEngineOptions>>(),
@@ -252,14 +254,16 @@ if (ibkrEnabled)
     await Task.Delay(TimeSpan.FromSeconds(3));
 
     using var reconScope = host.Services.CreateScope();
-    var broker  = host.Services.GetRequiredService<IBrokerService>();
-    var repo    = reconScope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
-    var guard   = host.Services.GetRequiredService<TradeGuard>();
-    var discord = host.Services.GetRequiredService<DiscordNotificationService>();
+    var broker   = host.Services.GetRequiredService<IBrokerService>();
+    var repo     = reconScope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
+    var closeOut = reconScope.ServiceProvider.GetRequiredService<GhostPositionCloseOutService>();
+    var guard    = host.Services.GetRequiredService<TradeGuard>();
+    var discord  = host.Services.GetRequiredService<DiscordNotificationService>();
 
     var reconciliation = new StartupReconciliationService(
         broker,
         repo,
+        closeOut,
         guard,
         discord,
         host.Services.GetRequiredService<ILogger<StartupReconciliationService>>());
@@ -267,7 +271,9 @@ if (ibkrEnabled)
     await reconciliation.RunAsync();
 }
 
-// Patch trader lists from appsettings into risk_config_overrides so the Api can serve them from DB
+// Patch trader lists and read-only display flags from appsettings into risk_config_overrides
+// so the Api can serve them from DB. allowOptions is display-only, the Worker only reads it
+// from appsettings.json at startup, so this seed does not make it settable from the dashboard.
 {
     var riskOpts = host.Services.GetRequiredService<IOptions<RiskEngineOptions>>().Value;
 
@@ -286,6 +292,8 @@ if (ibkrEnabled)
         (riskOpts.RestrictedTraders ?? new Dictionary<string, int>())
             .Select(kvp => new { name = kvp.Key, allotmentPct = kvp.Value })
             .ToList());
+
+    config["allowOptions"] = riskOpts.AllowOptions;
 
     var json = config.ToJsonString();
     var now  = DateTimeOffset.UtcNow;

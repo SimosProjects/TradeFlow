@@ -101,6 +101,7 @@ public static class DashboardEndpoints
     private static async Task<IResult> GetState(VelaDbContext db, CancellationToken ct)
     {
         var state = await db.SystemState.FirstOrDefaultAsync(s => s.Id == 1, ct);
+        var riskConfigJson = await db.RiskConfigOverrides.FirstOrDefaultAsync(r => r.Id == 1, ct);
 
         var todayStart  = TodayStartUtc();
         var dailyPnl    = await db.TradeMetrics
@@ -158,6 +159,7 @@ public static class DashboardEndpoints
             BlockCallsOverride:  state?.BlockCallsOverride ?? false,
             BlockHighOverride:   state?.BlockHighOverride ?? false,
             BlockLottoOverride:  state?.BlockLottoOverride ?? false,
+            AllowOptions:        ParseAllowOptions(riskConfigJson?.ConfigJson),
             WorkerHeartbeat:     state?.WorkerHeartbeat,
             LastAlertAt:         lastAlertAt
         );
@@ -438,6 +440,26 @@ public static class DashboardEndpoints
         price > 0 && ma > 0
             ? Math.Round((price!.Value - ma!.Value) / ma.Value * 100, 2)
             : 0m;
+
+    // Reads the read-only allowOptions snapshot the Worker seeds into
+    // risk_config_overrides.config_json at startup. Defaults to true, matching
+    // RiskEngineOptions.AllowOptions, when the row or field is absent (e.g. a
+    // Worker build predating this field, or a fresh DB before the first startup seed).
+    private static bool ParseAllowOptions(string? configJson)
+    {
+        if (configJson is null) return true;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(configJson);
+            return !doc.RootElement.TryGetProperty("allowOptions", out var value)
+                || value.GetBoolean();
+        }
+        catch
+        {
+            return true;
+        }
+    }
 
     private static string DetermineMarketBias(string? tier, decimal? vix) => tier switch
     {

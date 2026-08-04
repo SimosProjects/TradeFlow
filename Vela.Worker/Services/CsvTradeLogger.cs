@@ -87,6 +87,7 @@ public class CsvTradeLogger
         {
             var path = GetPath(trade.TradeType);
 
+            await EnsureFileExistsAsync(path, trade.TradeType, ct);
             await StripSummaryAsync(path, ct);
 
             var row = BuildOpenRow(trade);
@@ -115,6 +116,7 @@ public class CsvTradeLogger
         try
         {
             var path = GetPath(trade.TradeType);
+            await EnsureFileExistsAsync(path, trade.TradeType, ct);
             await RewriteTradeRowAsync(path, trade, ct);
             await UpdateSummaryAsync(path, trade.TradeType, ct);
 
@@ -344,6 +346,16 @@ public class CsvTradeLogger
 
         if (!File.Exists(_stocksPath))
             File.WriteAllText(_stocksPath, StocksHeader + Environment.NewLine);
+    }
+
+    // Recreates the CSV with its header if it was deleted or moved out from under a running
+    // Worker, this is the guaranteed file-creation step that all reads below depend on.
+    private static async Task EnsureFileExistsAsync(string path, TradeType tradeType, CancellationToken ct)
+    {
+        if (File.Exists(path)) return;
+
+        var header = tradeType == TradeType.Options ? OptionsHeader : StocksHeader;
+        await File.WriteAllTextAsync(path, header + Environment.NewLine, ct);
     }
 
     private static string FormatLatency(int? ms) => ms?.ToString() ?? "";

@@ -9,5 +9,6 @@ public enum TradeOutcome
     Averaged,     // averaged into position
     Cancelled,    // order cancelled
     ForcedClose,  // order was forced to clase
-    Expired       // options contract expired worthless
+    Expired,      // options contract expired worthless
+    ClosedExternally // discovered gone at the broker during reconciliation
 }
