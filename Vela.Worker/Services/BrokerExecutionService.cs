@@ -916,7 +916,24 @@ public class BrokerExecutionService
             return;
         }
 
-        await _csv.OpenTradeAsync(trade, ct);
+        // Isolated from the open_positions write above and from the trade_metrics write below.
+        // The position is already tracked and stopped at the broker at this point, a CSV
+        // failure here must not also take out the metrics write that follows it.
+        try
+        {
+            await _csv.OpenTradeAsync(trade, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "CSV write FAILED for {Symbol} OrderId {OrderId}. Position remains tracked in " +
+                "open_positions but is missing from the CSV log.", trade.Symbol, trade.OrderId);
+            await _discord.NotifyWarningAsync(
+                $"CSV Log Write Failed — {trade.Symbol}",
+                $"**{trade.Symbol}** OrderId {trade.OrderId} filled and is tracked in Vela, " +
+                $"but the CSV trade log write failed. Error: {ex.Message}",
+                ct);
+        }
 
         _logger.LogInformation(
             "ORDER PLACED — {Type} {Symbol} {Direction} × {Qty} @ ${Price:F2} | " +
@@ -927,47 +944,64 @@ public class BrokerExecutionService
 
         await _discord.NotifyOrderPlacedAsync(trade, ct);
 
-        var accountBalance     = await _broker.GetAccountBalanceAsync(ct);
-        var openPositionsValue = await _broker.GetOpenPositionsValueAsync(ct);
-
-        var slippagePct = alertedPrice > 0
-            ? (result.FillPrice - alertedPrice) / alertedPrice * 100
-            : 0m;
-
-        var exposurePct = accountBalance > 0
-            ? (openPositionsValue + order.BudgetUsed) / accountBalance * 100
-            : 0m;
-
-        using var metricScope = _scopeFactory.CreateScope();
-        var metrics = metricScope.ServiceProvider.GetRequiredService<ITradeMetricsRepository>();
-        await metrics.OpenAsync(new TradeMetric
+        // Isolated from the CSV write above, a CSV failure must not prevent trade_metrics
+        // from being recorded, and vice versa.
+        try
         {
-            Id                        = result.OrderId,
-            AlertId                   = alert.Id,
-            TraderName                = order.UserName,
-            XScore                    = (decimal?)alert.XScore,
-            DiscordRank               = alert.DiscordRank,
-            Symbol                    = order.Symbol,
-            TradeType                 = order.TradeType.ToString(),
-            Direction                 = order.Direction,
-            OptionsContract           = order.OptionsContractSymbol,
-            IsAverage                 = isAverage,
-            AlertReceivedAt           = alertReceivedAt,
-            OrderSubmittedAt          = orderSubmittedAt,
-            SessionLocation           = Environment.GetEnvironmentVariable("TRADING_LOCATION"),
-            OrderFilledAt             = result.FilledAt,
-            LatencyMs                 = (int)(result.FilledAt - alertReceivedAt).TotalMilliseconds,
-            AlertedPrice              = alertedPrice,
-            FillPrice                 = result.FillPrice,
-            SlippagePct               = slippagePct,
-            Quantity                  = result.FillQuantity,
-            EntryAmount               = result.FillAmount,
-            StopPrice                 = order.StopPrice,
-            TargetPrice               = order.TargetPrice,
-            AccountBalanceAtEntry     = accountBalance,
-            OpenPositionsValueAtEntry = openPositionsValue,
-            ExposurePct               = exposurePct,
-        }, ct);
+            var accountBalance     = await _broker.GetAccountBalanceAsync(ct);
+            var openPositionsValue = await _broker.GetOpenPositionsValueAsync(ct);
+
+            var slippagePct = alertedPrice > 0
+                ? (result.FillPrice - alertedPrice) / alertedPrice * 100
+                : 0m;
+
+            var exposurePct = accountBalance > 0
+                ? (openPositionsValue + order.BudgetUsed) / accountBalance * 100
+                : 0m;
+
+            using var metricScope = _scopeFactory.CreateScope();
+            var metrics = metricScope.ServiceProvider.GetRequiredService<ITradeMetricsRepository>();
+            await metrics.OpenAsync(new TradeMetric
+            {
+                Id                        = result.OrderId,
+                AlertId                   = alert.Id,
+                TraderName                = order.UserName,
+                XScore                    = (decimal?)alert.XScore,
+                DiscordRank               = alert.DiscordRank,
+                Symbol                    = order.Symbol,
+                TradeType                 = order.TradeType.ToString(),
+                Direction                 = order.Direction,
+                OptionsContract           = order.OptionsContractSymbol,
+                IsAverage                 = isAverage,
+                AlertReceivedAt           = alertReceivedAt,
+                OrderSubmittedAt          = orderSubmittedAt,
+                SessionLocation           = Environment.GetEnvironmentVariable("TRADING_LOCATION"),
+                OrderFilledAt             = result.FilledAt,
+                LatencyMs                 = (int)(result.FilledAt - alertReceivedAt).TotalMilliseconds,
+                AlertedPrice              = alertedPrice,
+                FillPrice                 = result.FillPrice,
+                SlippagePct               = slippagePct,
+                Quantity                  = result.FillQuantity,
+                EntryAmount               = result.FillAmount,
+                StopPrice                 = order.StopPrice,
+                TargetPrice               = order.TargetPrice,
+                AccountBalanceAtEntry     = accountBalance,
+                OpenPositionsValueAtEntry = openPositionsValue,
+                ExposurePct               = exposurePct,
+            }, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "trade_metrics write FAILED for {Symbol} OrderId {OrderId}. Position remains " +
+                "tracked in open_positions but is missing from trade_metrics.",
+                trade.Symbol, trade.OrderId);
+            await _discord.NotifyWarningAsync(
+                $"Trade Metrics Write Failed — {trade.Symbol}",
+                $"**{trade.Symbol}** OrderId {trade.OrderId} filled and is tracked in Vela, " +
+                $"but the trade_metrics write failed. Error: {ex.Message}",
+                ct);
+        }
     }
 
     // Parses the market price stored by IbkrEWrapper when IBKR fires a price-protection [202]

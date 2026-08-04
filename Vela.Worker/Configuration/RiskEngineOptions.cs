@@ -25,6 +25,8 @@ public class RiskEngineOptions
 
     public bool AllowHigh { get; init; } = true;
 
+    public bool AllowOptions { get; init; } = true;
+
     public List<string> BlockedSymbols { get; init; } = [];
 
     [Range(0, 10000, ErrorMessage = "MinStockPriceDollars must be between 0 and 10000.")]

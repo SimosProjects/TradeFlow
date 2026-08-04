@@ -1,10 +1,12 @@
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Vela.Worker.Configuration;
 using Vela.Worker.Data;
 using Vela.Worker.Engine;
+using Vela.Worker.Models;
 using Vela.Worker.Services;
 
 namespace Vela.Tests.Unit;
@@ -14,11 +16,20 @@ namespace Vela.Tests.Unit;
 /// TradeGuard is a real instance seeded via LoadFromDatabase; the repository
 /// and broker are mocked via Moq.
 /// </summary>
-public class PeriodicReconciliationServiceTests
+public class PeriodicReconciliationServiceTests : IDisposable
 {
+    private readonly List<string> _tempDirs = [];
+
+    public void Dispose()
+    {
+        foreach (var dir in _tempDirs)
+            if (Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
+    }
+
     // -- Helpers --
 
-    private static (
+    private (
         PeriodicReconciliationService Svc,
         TradeGuard Guard,
         Mock<IOpenPositionRepository> Repo)
@@ -45,8 +56,25 @@ public class PeriodicReconciliationServiceTests
         repo.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync([]);
 
+        // No trade_metrics row by default — GhostPositionCloseOutService no-ops, matching
+        // the pre-close-out behaviour these tests were written against.
+        var metrics = new Mock<ITradeMetricsRepository>();
+        metrics.Setup(m => m.GetByOrderIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync((TradeMetric?)null);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"vela_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        _tempDirs.Add(tempDir);
+        var csvConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Trades:Directory"] = tempDir })
+            .Build();
+        var csv = new CsvTradeLogger(csvConfig, NullLogger<CsvTradeLogger>.Instance);
+
         var services = new ServiceCollection();
         services.AddScoped<IOpenPositionRepository>(_ => repo.Object);
+        services.AddScoped<ITradeMetricsRepository>(_ => metrics.Object);
+        services.AddScoped(_ => new GhostPositionCloseOutService(
+            broker.Object, metrics.Object, csv, NullLogger<GhostPositionCloseOutService>.Instance));
         var scopeFactory = services.BuildServiceProvider()
             .GetRequiredService<IServiceScopeFactory>();
 

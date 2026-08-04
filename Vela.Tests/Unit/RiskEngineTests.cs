@@ -103,6 +103,26 @@ public class RiskEngineTests
         Assert.Contains("lotto", result.Reason);
     }
 
+    // -- AllowOptionsRule --
+    [Fact]
+    public void AllowOptionsRule_OptionsAlert_WhenDisabled_Fails()
+    {
+        var rule   = new AllowOptionsRule(allowOptions: false);
+        var alert  = BuildAlert();
+        var result = rule.Evaluate(alert);
+        Assert.False(result.Passed);
+        Assert.Contains("options", result.Reason);
+    }
+
+    [Fact]
+    public void AllowOptionsRule_StockAlert_WhenDisabled_StillPasses()
+    {
+        var rule   = new AllowOptionsRule(allowOptions: false);
+        var alert  = BuildStockAlert(price: 25.50m);
+        var result = rule.Evaluate(alert);
+        Assert.True(result.Passed);
+    }
+
     // -- MinXScoreRule --
     [Theory]
     [InlineData(60.0, 60.0, true)]   // exactly at threshold: passes

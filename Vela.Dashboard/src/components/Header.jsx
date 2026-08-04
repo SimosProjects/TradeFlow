@@ -1,7 +1,8 @@
 import { B } from '../styles/theme.js';
-import { StatusDot } from './shared/index.js';
+import { StatusDot, Pill } from './shared/index.js';
 
 export function Header({ timestamp, system, paused, onTogglePause }) {
+  const allowOptions = system?.allowOptions ?? true;
   return (
     <div style={{
       background: B.card,
@@ -31,6 +32,11 @@ export function Header({ timestamp, system, paused, onTogglePause }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+        <span title="Read-only — set RiskEngine:AllowOptions in appsettings.json and restart the Worker to change">
+          <Pill color={allowOptions ? B.gr : B.rd}>
+            Options {allowOptions ? 'On' : 'Off'}
+          </Pill>
+        </span>
         <StatusDot connected={system?.ibkrConnected}    label="Gateway" />
         <StatusDot connected={system?.xtradesConnected} label="Xtrades" />
         <StatusDot connected={system?.workerRunning}    label="Worker"  />

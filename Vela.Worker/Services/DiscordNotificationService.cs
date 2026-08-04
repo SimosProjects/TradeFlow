@@ -267,6 +267,47 @@ public class DiscordNotificationService
     }
 
     /// <summary>
+    /// Posts a non critical warning to the trade execution Discord channel.
+    /// Used when a trade is still safely tracked and stopped at the broker but a
+    /// downstream recording step (CSV log, trade_metrics) failed, so the gap surfaces
+    /// immediately instead of sitting undetected until someone checks the dashboard.
+    /// </summary>
+    public async Task NotifyWarningAsync(
+        string title,
+        string message,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(_executionWebhookUrl)) return;
+
+        try
+        {
+            var embed = new
+            {
+                title,
+                description = message,
+                color = 0xF39C12,
+                footer = new { text = "Vela Warning" },
+                timestamp = DateTimeOffset.UtcNow.ToString("o")
+            };
+
+            var payload = new { embeds = new[] { embed } };
+            var response = await _httpClient.PostAsJsonAsync(_executionWebhookUrl, payload, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogWarning(
+                    "Warning Discord POST failed: {StatusCode} — {Body}",
+                    response.StatusCode, body);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to send warning Discord notification.");
+        }
+    }
+
+    /// <summary>
     /// Posts a plain text IB account/position snapshot to the summary Discord channel,
     /// wrapped in a code block. Reuses the summary webhook, no separate channel or env var.
     /// </summary>

@@ -15,19 +15,28 @@ public interface ITradeMetricsRepository
 
     /// <summary>
     /// Updates an existing trade metric row with exit data when a position closes.
-    /// Called after RegisterClose confirms the position is closed.
+    /// Called after RegisterClose confirms the position is closed. Exit fields accept
+    /// null so a close-out can be recorded even when no reliable exit price was found
+    /// (e.g. a broker quote lookup failed or timed out during reconciliation).
     /// </summary>
     Task CloseAsync(
         string orderId,
-        decimal exitPrice,
-        decimal exitAmount,
-        decimal pnl,
-        decimal pnlPct,
+        decimal? exitPrice,
+        decimal? exitAmount,
+        decimal? pnl,
+        decimal? pnlPct,
         string outcome,
         DateTimeOffset closedAt,
         int? exitLatencyMs,
         decimal? exitSlippagePct,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the trade metric row for the given OrderId, or null if none exists.
+    /// Manual and reconciliation-synthesized positions never have one, since they
+    /// were never opened through the normal entry flow.
+    /// </summary>
+    Task<TradeMetric?> GetByOrderIdAsync(string orderId, CancellationToken ct = default);
 
     /// <summary>
     /// Returns the number of trades opened today in ET based on order_filled_at.
@@ -89,10 +98,10 @@ public class TradeMetricsRepository : ITradeMetricsRepository
     /// <inheritdoc/>
     public async Task CloseAsync(
         string orderId,
-        decimal exitPrice,
-        decimal exitAmount,
-        decimal pnl,
-        decimal pnlPct,
+        decimal? exitPrice,
+        decimal? exitAmount,
+        decimal? pnl,
+        decimal? pnlPct,
         string outcome,
         DateTimeOffset closedAt,
         int? exitLatencyMs,
@@ -117,15 +126,35 @@ public class TradeMetricsRepository : ITradeMetricsRepository
             if (updated == 0)
                 _logger.LogWarning(
                     "Trade metric close: no row found for OrderId {OrderId}", orderId);
-            else
+            else if (pnl.HasValue && pnlPct.HasValue)
                 _logger.LogInformation(
                     "Trade metric closed — OrderId: {OrderId} | P&L: {PnL:+$#,##0.00;-$#,##0.00} ({PnLPct:+0.00;-0.00}%) | Outcome: {Outcome}",
                     orderId, pnl, pnlPct, outcome);
+            else
+                _logger.LogInformation(
+                    "Trade metric closed — OrderId: {OrderId} | Outcome: {Outcome} | no exit price available",
+                    orderId, outcome);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
                 "Failed to update close trade metric for OrderId: {OrderId}", orderId);
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<TradeMetric?> GetByOrderIdAsync(string orderId, CancellationToken ct = default)
+    {
+        try
+        {
+            return await _db.TradeMetrics
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Id == orderId, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to query trade metric for OrderId: {OrderId}", orderId);
+            return null;
         }
     }
 

@@ -93,8 +93,10 @@ public class PeriodicReconciliationService : BackgroundService
             return;
         }
 
+        var ordersSnapshot = await _broker.GetAllOpenOrdersAsync(ct);
+
         await CheckManagedPositionsAsync(snapshot.Positions, ct);
-        await DetectNewManualPositionsAsync(snapshot.Positions, ct);
+        await DetectNewManualPositionsAsync(snapshot.Positions, ordersSnapshot, ct);
         await CleanClosedManualPositionsAsync(snapshot.Positions, ct);
     }
 
@@ -115,13 +117,18 @@ public class PeriodicReconciliationService : BackgroundService
     {
         var openTrades = _guard.GetOpenTrades();
 
-        List<OpenPosition> manualPositions;
+        List<OpenPosition> allDbPositions;
         using (var scope = _scopeFactory.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
-            var allDbPositions = await repo.GetAllAsync(ct);
-            manualPositions = allDbPositions.Where(p => p.IsManual).ToList();
+            allDbPositions = await repo.GetAllAsync(ct);
         }
+
+        // Keyed lookup so the close-out helper below gets the full open_positions row (Strike,
+        // Expiration, EntryAmount) instead of just the OrderId/Symbol this method receives for
+        // TradeGuard-managed trades.
+        var dbByOrderId = allDbPositions.ToDictionary(p => p.OrderId);
+        var manualPositions = allDbPositions.Where(p => p.IsManual).ToList();
 
         if (openTrades.Count == 0 && manualPositions.Count == 0) return;
 
@@ -129,22 +136,23 @@ public class PeriodicReconciliationService : BackgroundService
         {
             var match = FindIbkrPositionForTrade(ibkrPositions, trade);
             var isLive = match is not null && match.Quantity > 0;
-            await CheckPositionLivenessAsync(trade.OrderId, trade.Symbol, isLive, ct);
+            dbByOrderId.TryGetValue(trade.OrderId, out var dbPosition);
+            await CheckPositionLivenessAsync(trade.OrderId, trade.Symbol, dbPosition, isLive, ct);
         }
 
         foreach (var manual in manualPositions)
         {
             var match = FindIbkrPositionForDb(ibkrPositions, manual);
             var isLive = match is not null && match.Quantity > 0;
-            await CheckPositionLivenessAsync(manual.OrderId, manual.Symbol, isLive, ct);
+            await CheckPositionLivenessAsync(manual.OrderId, manual.Symbol, manual, isLive, ct);
         }
     }
 
     // Shared miss-streak/cleanup logic used identically for both TradeGuard-managed and
-    // manually-tracked positions — a manual row isn't inherently more trustworthy over time
+    // manually-tracked positions, a manual row isn't inherently more trustworthy over time
     // than a managed one, it's just missing stop/target tracking of its own.
     private async Task CheckPositionLivenessAsync(
-        string orderId, string symbol, bool isLive, CancellationToken ct)
+        string orderId, string symbol, OpenPosition? dbPosition, bool isLive, CancellationToken ct)
     {
         if (isLive)
         {
@@ -185,6 +193,12 @@ public class PeriodicReconciliationService : BackgroundService
 
         using (var scope = _scopeFactory.CreateScope())
         {
+            if (dbPosition is not null)
+            {
+                var closeOut = scope.ServiceProvider.GetRequiredService<GhostPositionCloseOutService>();
+                await closeOut.CloseOutAsync(dbPosition, ct);
+            }
+
             var repo = scope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
             await repo.DeleteAsync(orderId, ct);
         }
@@ -200,9 +214,10 @@ public class PeriodicReconciliationService : BackgroundService
 
     // Detects IBKR long positions not tracked in the DB or TradeGuard.
     // These are manual trades placed directly in IBKR. Creates tracking records
-    // (is_manual=true) so they appear on the dashboard — no management, tracking only.
+    // (is_manual=true) so they appear on the dashboard, no management, tracking only.
     private async Task DetectNewManualPositionsAsync(
         List<IbkrPosition> ibkrPositions,
+        OrdersSnapshot ordersSnapshot,
         CancellationToken ct)
     {
         var longPositions = ibkrPositions.Where(p => p.Quantity > 0).ToList();
@@ -227,7 +242,12 @@ public class PeriodicReconciliationService : BackgroundService
                 "Creating manual tracking record.",
                 ibkrPos.Symbol, ibkrPos.SecType, ibkrPos.Quantity);
 
-            var manualPos = BuildManualPosition(ibkrPos);
+            var matchingStop = ordersSnapshot.Orders.FirstOrDefault(o =>
+                o.Symbol == ibkrPos.Symbol &&
+                o.Action == "SELL" &&
+                (o.OrderType == "TRAIL" || o.OrderType == "STP" || o.OrderType == "LMT"));
+
+            var manualPos = BuildManualPosition(ibkrPos, matchingStop);
 
             using (var scope = _scopeFactory.CreateScope())
             {
@@ -250,7 +270,7 @@ public class PeriodicReconciliationService : BackgroundService
     }
 
     // Removes manual tracking records for positions that are no longer in IBKR.
-    // The user closed them via IBKR — Vela removes the dashboard entry and notes the closure.
+    // The user closed them via IBKR, Vela removes the dashboard entry and notes the closure.
     private async Task CleanClosedManualPositionsAsync(
         List<IbkrPosition> ibkrPositions,
         CancellationToken ct)
@@ -276,6 +296,9 @@ public class PeriodicReconciliationService : BackgroundService
 
             using (var scope = _scopeFactory.CreateScope())
             {
+                var closeOut = scope.ServiceProvider.GetRequiredService<GhostPositionCloseOutService>();
+                await closeOut.CloseOutAsync(manual, ct);
+
                 var repo = scope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
                 await repo.DeleteAsync(manual.OrderId, ct);
             }
@@ -290,7 +313,7 @@ public class PeriodicReconciliationService : BackgroundService
 
     // -- Helpers --
 
-    private static OpenPosition BuildManualPosition(IbkrPosition ibkrPos)
+    private static OpenPosition BuildManualPosition(IbkrPosition ibkrPos, IbkrOpenOrder? matchingStop)
     {
         var isOptions = ibkrPos.SecType == "OPT";
 
@@ -306,7 +329,7 @@ public class PeriodicReconciliationService : BackgroundService
         return new OpenPosition
         {
             OrderId         = $"MANUAL-{ibkrPos.Symbol.Replace(" ", "")}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
-            StopOrderId     = null,
+            StopOrderId     = matchingStop?.OrderId.ToString(),
             TargetOrderId   = null,
             AlertId         = "MANUAL",
             UserName        = "MANUAL",
@@ -319,7 +342,7 @@ public class PeriodicReconciliationService : BackgroundService
             Quantity        = ibkrPos.Quantity,
             EntryPrice      = entryPrice,
             EntryAmount     = entryAmount,
-            StopPrice       = 0m,
+            StopPrice       = matchingStop is { AuxPrice: not null } ? (decimal)matchingStop.AuxPrice.Value : 0m,
             TargetPrice     = 0m,
             OpenedAt        = DateTimeOffset.UtcNow,
             IsAverage       = false,

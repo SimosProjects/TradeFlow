@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Vela.Worker.Configuration;
@@ -14,11 +15,20 @@ namespace Vela.Tests.Unit;
 /// All external dependencies are mocked via Moq; TradeGuard and
 /// DiscordNotificationService are real instances with no external calls.
 /// </summary>
-public class StartupReconciliationServiceTests
+public class StartupReconciliationServiceTests : IDisposable
 {
+    private readonly List<string> _tempDirs = [];
+
+    public void Dispose()
+    {
+        foreach (var dir in _tempDirs)
+            if (Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
+    }
+
     // -- Helpers --
 
-    private static (
+    private (
         StartupReconciliationService Svc,
         Mock<IBrokerService> Broker,
         Mock<IOpenPositionRepository> Repo)
@@ -26,6 +36,20 @@ public class StartupReconciliationServiceTests
     {
         var broker = new Mock<IBrokerService>();
         var repo   = new Mock<IOpenPositionRepository>();
+
+        // No trade_metrics row by default — GhostPositionCloseOutService no-ops, matching
+        // the pre-close-out behaviour these tests were written against.
+        var metrics = new Mock<ITradeMetricsRepository>();
+        metrics.Setup(m => m.GetByOrderIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync((TradeMetric?)null);
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"vela_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        _tempDirs.Add(tempDir);
+        var csvConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Trades:Directory"] = tempDir })
+            .Build();
+        var csv = new CsvTradeLogger(csvConfig, NullLogger<CsvTradeLogger>.Instance);
 
         broker.Setup(b => b.GetAccountBalanceAsync(It.IsAny<CancellationToken>()))
               .ReturnsAsync(100_000m);
@@ -65,8 +89,12 @@ public class StartupReconciliationServiceTests
         var discord = new DiscordNotificationService(
             NullLogger<DiscordNotificationService>.Instance);
 
+        var closeOut = new GhostPositionCloseOutService(
+            broker.Object, metrics.Object, csv,
+            NullLogger<GhostPositionCloseOutService>.Instance);
+
         var svc = new StartupReconciliationService(
-            broker.Object, repo.Object, guard, discord,
+            broker.Object, repo.Object, closeOut, guard, discord,
             NullLogger<StartupReconciliationService>.Instance);
 
         return (svc, broker, repo);

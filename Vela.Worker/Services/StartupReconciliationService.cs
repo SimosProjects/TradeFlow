@@ -28,6 +28,7 @@ public class StartupReconciliationService
 
     private readonly IBrokerService _broker;
     private readonly IOpenPositionRepository _repo;
+    private readonly GhostPositionCloseOutService _closeOut;
     private readonly TradeGuard _guard;
     private readonly DiscordNotificationService _discord;
     private readonly ILogger<StartupReconciliationService> _logger;
@@ -35,15 +36,17 @@ public class StartupReconciliationService
     public StartupReconciliationService(
         IBrokerService broker,
         IOpenPositionRepository repo,
+        GhostPositionCloseOutService closeOut,
         TradeGuard guard,
         DiscordNotificationService discord,
         ILogger<StartupReconciliationService> logger)
     {
-        _broker  = broker;
-        _repo    = repo;
-        _guard   = guard;
-        _discord = discord;
-        _logger  = logger;
+        _broker   = broker;
+        _repo     = repo;
+        _closeOut = closeOut;
+        _guard    = guard;
+        _discord  = discord;
+        _logger   = logger;
     }
 
     /// <summary>
@@ -99,10 +102,12 @@ public class StartupReconciliationService
                 "Startup reconciliation — IBKR: {IbkrCount} positions, DB: {DbCount} positions.",
                 snapshot.Positions.Count, dbPositions.Count);
 
+            var ordersSnapshot = await _broker.GetAllOpenOrdersAsync(ct);
+
             await CoverShortsAsync(snapshot.Positions, ct);
             await VerifyDbPositionsAsync(snapshot.Positions, dbPositions, ct);
-            await DetectManualPositionsAsync(snapshot.Positions, dbPositions, ct);
-            await ClassifyOpenOrdersAsync(ct);
+            await DetectManualPositionsAsync(snapshot.Positions, dbPositions, ordersSnapshot, ct);
+            await ClassifyOpenOrdersAsync(ordersSnapshot, ct);
 
             _logger.LogInformation("Startup reconciliation — complete.");
         }
@@ -231,6 +236,7 @@ public class StartupReconciliationService
                     "Removing from DB and TradeGuard — position closed while offline.",
                     dbPos.Symbol, dbPos.OrderId);
 
+                await _closeOut.CloseOutAsync(dbPos, ct);
                 await _repo.DeleteAsync(dbPos.OrderId, ct);
                 _guard.RemovePosition(dbPos.OrderId);
 
@@ -250,6 +256,7 @@ public class StartupReconciliationService
                     "Short or zero position — removing from DB and TradeGuard.",
                     dbPos.Symbol, dbPos.OrderId, ibkrMatch.Quantity);
 
+                await _closeOut.CloseOutAsync(dbPos, ct);
                 await _repo.DeleteAsync(dbPos.OrderId, ct);
                 _guard.RemovePosition(dbPos.OrderId);
                 continue;
@@ -279,6 +286,7 @@ public class StartupReconciliationService
     private async Task DetectManualPositionsAsync(
         List<IbkrPosition> ibkrPositions,
         List<OpenPosition> dbPositions,
+        OrdersSnapshot ordersSnapshot,
         CancellationToken ct)
     {
         var longPositions = ibkrPositions.Where(p => p.Quantity > 0).ToList();
@@ -302,7 +310,12 @@ public class StartupReconciliationService
                 "Periodic reconciliation — new untracked position: {Symbol} {SecType} qty {Qty}. Creating manual tracking record.",
                 ibkrPos.Symbol, ibkrPos.SecType, ibkrPos.Quantity);
 
-            var manualPos = BuildManualPosition(ibkrPos);
+                var matchingStop = ordersSnapshot.Orders.FirstOrDefault(o =>
+                o.Symbol == ibkrPos.Symbol &&
+                o.Action == "SELL" &&
+                (o.OrderType == "TRAIL" || o.OrderType == "STP" || o.OrderType == "LMT"));
+
+            var manualPos = BuildManualPosition(ibkrPos, matchingStop);
             await _repo.SaveAsync(manualPos, ct);
 
             var is0Dte = IsExpiringToday(ibkrPos);
@@ -323,11 +336,9 @@ public class StartupReconciliationService
 
     // -- Step 4: Classify open orders --
 
-    private async Task ClassifyOpenOrdersAsync(CancellationToken ct)
+    private async Task ClassifyOpenOrdersAsync(OrdersSnapshot snapshot, CancellationToken ct)
     {
         _logger.LogInformation("Startup reconciliation step 4 — classifying open orders.");
-
-        var snapshot = await _broker.GetAllOpenOrdersAsync(ct);
 
         if (snapshot.TimedOut)
         {
@@ -377,7 +388,7 @@ public class StartupReconciliationService
 
     // -- Helpers --
 
-    private static OpenPosition BuildManualPosition(IbkrPosition ibkrPos)
+    private static OpenPosition BuildManualPosition(IbkrPosition ibkrPos, IbkrOpenOrder? matchingStop)
     {
         var isOptions = ibkrPos.SecType == "OPT";
 
@@ -392,8 +403,8 @@ public class StartupReconciliationService
         return new OpenPosition
         {
             OrderId         = $"MANUAL-{ibkrPos.Symbol.Replace(" ", "")}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
-            StopOrderId     = null,
-            TargetOrderId   = null,
+            StopOrderId     = matchingStop?.OrderId.ToString(),
+            TargetOrderId   = null,         
             AlertId         = "MANUAL",
             UserName        = "MANUAL",
             Symbol          = ibkrPos.Symbol,
@@ -405,7 +416,7 @@ public class StartupReconciliationService
             Quantity        = ibkrPos.Quantity,
             EntryPrice      = entryPrice,
             EntryAmount     = entryAmount,
-            StopPrice       = 0m,
+            StopPrice       = matchingStop is { AuxPrice: not null } ? (decimal)matchingStop.AuxPrice.Value : 0m,
             TargetPrice     = 0m,
             OpenedAt        = DateTimeOffset.UtcNow,
             IsAverage       = false,
