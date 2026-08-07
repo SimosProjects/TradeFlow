@@ -2194,12 +2194,13 @@ public class IbkrBrokerService : IBrokerService
 
     private static BrokerOrderResult FailedResult(string reason) =>
         new(
-            OrderId:       "FAILED",
-            StopOrderId:   null,
-            TargetOrderId: null,
-            FillPrice:     0m,
-            FillQuantity:  0,
-            FillAmount:    0m,
-            Status:        OrderStatus.Rejected,
-            FilledAt:      DateTimeOffset.UtcNow);
+            OrderId:         "FAILED",
+            StopOrderId:     null,
+            TargetOrderId:   null,
+            FillPrice:       0m,
+            FillQuantity:    0,
+            FillAmount:      0m,
+            Status:          OrderStatus.Rejected,
+            FilledAt:        DateTimeOffset.UtcNow,
+            RejectionReason: reason);
 }

@@ -28,4 +28,14 @@ public class OpenPosition
     public bool IsAverage { get; set; }
     public bool HasAveraged { get; set; }
     public bool IsManual { get; set; }
+
+    /// <summary>
+    /// Set when a close attempt was deferred because the broker rejected it or was
+    /// unreachable (e.g. IB Gateway down). Holds the TradeOutcome to retry with.
+    /// Cleared implicitly, the row is deleted once a retried close actually succeeds.
+    /// </summary>
+    public string? PendingCloseOutcome { get; set; }
+
+    /// <summary>Timestamp of the first deferred close attempt, preserved across retries.</summary>
+    public DateTimeOffset? PendingCloseSince { get; set; }
 }

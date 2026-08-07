@@ -957,6 +957,218 @@ public class BrokerExecutionServiceTests
         _guard.GetOpenTrades().Should().BeEmpty();
     }
 
+    // -- Deferred close on broker outage (2026-08-07 ROAD/DKNG incident) --
+
+    [Fact]
+    public async Task HandleExitAsync_BrokerNotConnected_LeavesOpenAndFlagsPendingRetry()
+    {
+        // ClosePositionAsync returns Rejected with "Not connected to IB Gateway" — the
+        // FailedResult path in IbkrBrokerService when EnsureConnected() fails. Recording this as
+        // a close would call RegisterClose with FillPrice 0, producing a fabricated ~-100% loss
+        // for a position never actually touched at the broker.
+        var order = new TradeOrder(
+            AlertId: Guid.NewGuid().ToString(), UserName: "TestTrader", Symbol: "TSLA",
+            TradeType: TradeType.Options, OptionsContractSymbol: "TSLA260620C00450000",
+            Direction: "call", Strike: 450, Expiration: "2026-06-20",
+            Quantity: 2, EstimatedEntryPrice: 4.95m, BudgetUsed: 990m,
+            StopPrice: 2.48m, TargetPrice: 14.85m, TrailPercent: 50.0);
+
+        _guard.RegisterOpen(order, new BrokerOrderResult(
+            OrderId: "ORDER-GW1", StopOrderId: "STOP-GW1", TargetOrderId: null,
+            FillPrice: 4.95m, FillQuantity: 2, FillAmount: 990m,
+            Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        _brokerMock
+            .Setup(b => b.ClosePositionAsync(It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "FAILED", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Rejected, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: "Not connected to IB Gateway"));
+
+        var exitAlert = BuildAlert(side: "stc", userName: "TestTrader");
+        var matched = await _executionMarketOpen.HandleExitAsync(exitAlert);
+
+        matched.Should().BeFalse();
+        _guard.GetOpenTrades().Should().HaveCount(1, "no real close was attempted at the broker");
+        _repoMock.Verify(
+            r => r.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _metricsMock.Verify(m => m.CloseAsync(
+            It.IsAny<string>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(),
+            It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<string>(),
+            It.IsAny<DateTimeOffset>(), It.IsAny<int?>(), It.IsAny<decimal?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        _repoMock.Verify(r => r.MarkPendingCloseAsync(
+            "ORDER-GW1", TradeOutcome.XtradesExit.ToString(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleExitAsync_BrokerCancelled_LeavesOpenAndFlagsPendingRetry()
+    {
+        // Same failure family as Rejected — Cancelled must be treated identically, no close
+        // recorded, position left open and flagged for retry.
+        var order = new TradeOrder(
+            AlertId: Guid.NewGuid().ToString(), UserName: "TestTrader", Symbol: "TSLA",
+            TradeType: TradeType.Options, OptionsContractSymbol: "TSLA260620C00450000",
+            Direction: "call", Strike: 450, Expiration: "2026-06-20",
+            Quantity: 2, EstimatedEntryPrice: 4.95m, BudgetUsed: 990m,
+            StopPrice: 2.48m, TargetPrice: 14.85m, TrailPercent: 50.0);
+
+        _guard.RegisterOpen(order, new BrokerOrderResult(
+            OrderId: "ORDER-GW2", StopOrderId: "STOP-GW2", TargetOrderId: null,
+            FillPrice: 4.95m, FillQuantity: 2, FillAmount: 990m,
+            Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        _brokerMock
+            .Setup(b => b.ClosePositionAsync(It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "FAILED", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Cancelled, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: "Order cancelled"));
+
+        var exitAlert = BuildAlert(side: "stc", userName: "TestTrader");
+        var matched = await _executionMarketOpen.HandleExitAsync(exitAlert);
+
+        matched.Should().BeFalse();
+        _guard.GetOpenTrades().Should().HaveCount(1);
+        _repoMock.Verify(r => r.MarkPendingCloseAsync(
+            "ORDER-GW2", TradeOutcome.XtradesExit.ToString(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task ForceCloseAsync_BrokerNotConnected_LeavesOpenAndFlagsPendingRetry()
+    {
+        // Same broker-unreachable gap in ForceCloseAsync — used by MarketSchedulerService
+        // (same-day expiry closes) and the dashboard force-close flow. Must not record a close.
+        var order = new TradeOrder(
+            AlertId: Guid.NewGuid().ToString(), UserName: "TestTrader", Symbol: "TSLA",
+            TradeType: TradeType.Options, OptionsContractSymbol: "TSLA260620C00450000",
+            Direction: "call", Strike: 450, Expiration: "2026-06-20",
+            Quantity: 2, EstimatedEntryPrice: 4.95m, BudgetUsed: 990m,
+            StopPrice: 2.48m, TargetPrice: 14.85m, TrailPercent: 50.0);
+
+        _guard.RegisterOpen(order, new BrokerOrderResult(
+            OrderId: "ORDER-GW3", StopOrderId: "STOP-GW3", TargetOrderId: null,
+            FillPrice: 4.95m, FillQuantity: 2, FillAmount: 990m,
+            Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        _brokerMock
+            .Setup(b => b.ClosePositionAsync(It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "FAILED", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Rejected, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: "Not connected to IB Gateway"));
+
+        var trade = _guard.FindOpenTrade("TestTrader", "TSLA260620C00450000", "TSLA")!;
+        var outcome = await _executionMarketOpen.ForceCloseAsync(trade, TradeOutcome.ForcedClose);
+
+        outcome.Should().Be(ForceCloseOutcome.Failed);
+        _guard.GetOpenTrades().Should().HaveCount(1, "no real close was attempted at the broker");
+        _repoMock.Verify(
+            r => r.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _repoMock.Verify(r => r.MarkPendingCloseAsync(
+            "ORDER-GW3", TradeOutcome.ForcedClose.ToString(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RetryPendingClosesAsync_BrokerReconnected_ClosesFlaggedPosition()
+    {
+        // A prior cycle flagged this position pending after the broker was unreachable.
+        // Once GetPendingCloseAsync surfaces it and the broker now fills the close, the retry
+        // must complete it exactly like a normal close.
+        var order = new TradeOrder(
+            AlertId: Guid.NewGuid().ToString(), UserName: "TestTrader", Symbol: "TSLA",
+            TradeType: TradeType.Options, OptionsContractSymbol: "TSLA260620C00450000",
+            Direction: "call", Strike: 450, Expiration: "2026-06-20",
+            Quantity: 2, EstimatedEntryPrice: 4.95m, BudgetUsed: 990m,
+            StopPrice: 2.48m, TargetPrice: 14.85m, TrailPercent: 50.0);
+
+        _guard.RegisterOpen(order, new BrokerOrderResult(
+            OrderId: "ORDER-GW4", StopOrderId: "STOP-GW4", TargetOrderId: null,
+            FillPrice: 4.95m, FillQuantity: 2, FillAmount: 990m,
+            Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        _repoMock.Setup(r => r.GetPendingCloseAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new OpenPosition
+            {
+                OrderId       = "ORDER-GW4",
+                UserName      = "TestTrader",
+                Symbol        = "TSLA",
+                OptionsContract = "TSLA260620C00450000",
+                TradeType     = "Options",
+                Quantity      = 2,
+                EntryPrice    = 4.95m,
+                EntryAmount   = 990m,
+                PendingCloseOutcome = TradeOutcome.XtradesExit.ToString(),
+                PendingCloseSince   = DateTimeOffset.UtcNow.AddMinutes(-30),
+            }]);
+
+        // Broker is back — the retried close now fills normally.
+        _brokerMock
+            .Setup(b => b.ClosePositionAsync(It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "CLOSE-GW4", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 9.90m, FillQuantity: 2, FillAmount: 1_980m,
+                Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        await _executionMarketOpen.RetryPendingClosesAsync();
+
+        _guard.GetOpenTrades().Should().BeEmpty("the retried close succeeded");
+        _repoMock.Verify(
+            r => r.DeleteAsync("ORDER-GW4", It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task RetryPendingClosesAsync_BrokerStillDown_LeavesFlagged()
+    {
+        // Broker is still unreachable on retry — must not record a close and must re-flag
+        // rather than silently dropping the pending state.
+        var order = new TradeOrder(
+            AlertId: Guid.NewGuid().ToString(), UserName: "TestTrader", Symbol: "TSLA",
+            TradeType: TradeType.Options, OptionsContractSymbol: "TSLA260620C00450000",
+            Direction: "call", Strike: 450, Expiration: "2026-06-20",
+            Quantity: 2, EstimatedEntryPrice: 4.95m, BudgetUsed: 990m,
+            StopPrice: 2.48m, TargetPrice: 14.85m, TrailPercent: 50.0);
+
+        _guard.RegisterOpen(order, new BrokerOrderResult(
+            OrderId: "ORDER-GW5", StopOrderId: "STOP-GW5", TargetOrderId: null,
+            FillPrice: 4.95m, FillQuantity: 2, FillAmount: 990m,
+            Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        _repoMock.Setup(r => r.GetPendingCloseAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([new OpenPosition
+            {
+                OrderId       = "ORDER-GW5",
+                UserName      = "TestTrader",
+                Symbol        = "TSLA",
+                OptionsContract = "TSLA260620C00450000",
+                TradeType     = "Options",
+                Quantity      = 2,
+                EntryPrice    = 4.95m,
+                EntryAmount   = 990m,
+                PendingCloseOutcome = TradeOutcome.XtradesExit.ToString(),
+                PendingCloseSince   = DateTimeOffset.UtcNow.AddMinutes(-30),
+            }]);
+
+        _brokerMock
+            .Setup(b => b.ClosePositionAsync(It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "FAILED", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Rejected, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: "Not connected to IB Gateway"));
+
+        await _executionMarketOpen.RetryPendingClosesAsync();
+
+        _guard.GetOpenTrades().Should().HaveCount(1, "broker is still unreachable");
+        _repoMock.Verify(
+            r => r.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _repoMock.Verify(r => r.MarkPendingCloseAsync(
+            "ORDER-GW5", TradeOutcome.XtradesExit.ToString(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     // -- Options alert staleness check --
 
     [Fact]

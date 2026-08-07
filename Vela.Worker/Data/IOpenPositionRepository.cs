@@ -40,4 +40,14 @@ public interface IOpenPositionRepository
         decimal newEntryAmount,
         string? newStopOrderId,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Flags a position as having a deferred close (broker rejected the attempt or was
+    /// unreachable) so a later retry can find it without depending on the original alert
+    /// still being available. Preserves the original PendingCloseSince across repeat calls.
+    /// </summary>
+    Task MarkPendingCloseAsync(string orderId, string outcome, CancellationToken ct = default);
+
+    /// <summary>Gets all positions currently flagged with a deferred close awaiting retry.</summary>
+    Task<List<OpenPosition>> GetPendingCloseAsync(CancellationToken ct = default);
 }

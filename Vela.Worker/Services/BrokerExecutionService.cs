@@ -244,6 +244,38 @@ public class BrokerExecutionService
             return false;
         }
 
+        // Broker rejected or cancelled the close outright, most commonly "Not connected to IB
+        // Gateway" (the FailedResult path in IbkrBrokerService). No real close was attempted at
+        // the broker. Recording this would fabricate a closed trade_metrics row at a zero price
+        // while the position sits fully exposed and untracked (the 2026-08-07 ROAD/DKNG
+        // incident). Leave the position open and flag it for retry, exits are not ID-deduped so
+        // the next poll cycle also retries automatically once the broker is reachable again.
+        if (closeResult.Status is OrderStatus.Rejected or OrderStatus.Cancelled)
+        {
+            _guard.RevertClosing(alert.UserName ?? "", alert.OptionsContractSymbol, alert.Symbol ?? "");
+
+            _logger.LogError(
+                "Close attempt failed for {Symbol} — {Reason}. Position left open and fully " +
+                "tracked in Vela. Will retry automatically once the broker is reachable.",
+                alert.Symbol, closeResult.RejectionReason ?? closeResult.Status.ToString());
+
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var repo = scope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
+                await repo.MarkPendingCloseAsync(trade.OrderId, TradeOutcome.XtradesExit.ToString(), ct);
+            }
+
+            await _discord.NotifyCriticalAsync(
+                $"🚨 Exit Close Failed — {trade.Symbol}",
+                $"Close attempt for **{trade.Symbol}** failed at the broker " +
+                $"({closeResult.RejectionReason ?? closeResult.Status.ToString()}). " +
+                "Position remains open and fully tracked in Vela — trade_metrics was NOT closed. " +
+                "Will retry automatically once the broker reconnects.",
+                ct);
+
+            return false;
+        }
+
         var alertedExitPrice = alert.PriceAtExit ?? alert.ActualPriceAtTimeOfExit ?? 0m;
         var exitLatencyMs    = (int)(closeResult.FilledAt - alertReceivedAt).TotalMilliseconds;
         var exitSlippagePct  = alertedExitPrice > 0
@@ -388,6 +420,37 @@ public class BrokerExecutionService
             return ForceCloseOutcome.PartialFill;
         }
 
+        // Broker rejected or cancelled the close outright, most commonly "Not connected to IB
+        // Gateway". No real close was attempted at the broker. Recording this would fabricate a
+        // closed trade_metrics row at a zero price while the position sits fully exposed and
+        // untracked (the 2026-08-07 ROAD/DKNG incident). Leave the position open and flag it
+        // for retry rather than recording a false close.
+        if (closeResult.Status is OrderStatus.Rejected or OrderStatus.Cancelled)
+        {
+            _guard.RevertClosing(trade.UserName, trade.OptionsContract, trade.Symbol);
+
+            _logger.LogError(
+                "Force close attempt failed for {Symbol} — {Reason}. Position left open and " +
+                "fully tracked in Vela. Will retry automatically once the broker is reachable.",
+                trade.Symbol, closeResult.RejectionReason ?? closeResult.Status.ToString());
+
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var repo = scope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
+                await repo.MarkPendingCloseAsync(trade.OrderId, outcome.ToString(), ct);
+            }
+
+            await _discord.NotifyCriticalAsync(
+                $"🚨 Force Close Failed — {trade.Symbol}",
+                $"Force close attempt for **{trade.Symbol}** failed at the broker " +
+                $"({closeResult.RejectionReason ?? closeResult.Status.ToString()}). " +
+                "Position remains open and fully tracked in Vela — trade_metrics was NOT closed. " +
+                "Will retry automatically once the broker reconnects.",
+                ct);
+
+            return ForceCloseOutcome.Failed;
+        }
+
         var closedTrade = _guard.RegisterClose(
             trade.UserName,
             trade.OptionsContract,
@@ -435,6 +498,60 @@ public class BrokerExecutionService
         }
 
         return ForceCloseOutcome.Closed;
+    }
+
+    /// <summary>
+    /// Re-attempts any position flagged with a deferred close, from HandleExitAsync or
+    /// ForceCloseAsync finding the broker unreachable or rejecting the close outright. Called
+    /// every poll cycle so a close deferred overnight while IB Gateway is down retries
+    /// automatically once it reconnects, independent of whether Xtrades still surfaces the
+    /// original exit alert. Reuses ForceCloseAsync for the retry, which carries the same
+    /// TryMarkClosing single-closer election, so it cannot race a fresh exit alert for the
+    /// same position arriving in the same poll cycle.
+    /// </summary>
+    public async Task RetryPendingClosesAsync(CancellationToken ct = default)
+    {
+        List<OpenPosition> pending;
+        using (var scope = _scopeFactory.CreateScope())
+        {
+            var repo = scope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
+            pending = await repo.GetPendingCloseAsync(ct);
+        }
+
+        if (pending.Count == 0) return;
+
+        foreach (var position in pending)
+        {
+            try
+            {
+                if (!Enum.TryParse<TradeOutcome>(position.PendingCloseOutcome, out var outcome))
+                {
+                    _logger.LogError(
+                        "Pending close retry — unrecognized outcome {Outcome} for {Symbol}, skipping.",
+                        position.PendingCloseOutcome, position.Symbol);
+                    continue;
+                }
+
+                var trade = _guard.FindOpenTrade(position.UserName, position.OptionsContract, position.Symbol);
+                if (trade is null)
+                {
+                    _logger.LogDebug(
+                        "Pending close retry — {Symbol} no longer tracked in TradeGuard, skipping.",
+                        position.Symbol);
+                    continue;
+                }
+
+                _logger.LogInformation(
+                    "Retrying deferred close for {Symbol} — pending since {Since}.",
+                    position.Symbol, position.PendingCloseSince);
+
+                await ForceCloseAsync(trade, outcome, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Pending close retry failed for {Symbol}.", position.Symbol);
+            }
+        }
     }
 
     /// <summary>
