@@ -237,7 +237,8 @@ public static class IbSnapshotFormatter
         else if (stopOrder is not null)
         {
             lines.Add("✓ Stop Loss");
-            lines.Add($"{stopOrder.Action} {stopOrder.Quantity:0} @ {stopOrder.AuxPrice ?? 0:F2}");
+            lines.Add($"{stopOrder.Action} {stopOrder.Quantity:0} @ {stopOrder.AuxPrice ?? 0:F2} " +
+                $"({FormatStopOrderType(stopOrder)})");
             lines.Add(stopOrder.Status);
         }
         else
@@ -305,6 +306,14 @@ public static class IbSnapshotFormatter
             _ => (null, true)
         };
     }
+
+    // Distinguishes a trailing stop from a fixed stop at a glance — "TRAIL 15%" vs "STP" — so
+    // the snapshot doesn't show the same "@ price" shape for two different kinds of protection.
+    // Falls back to the bare OrderType when a TRAIL order's percent wasn't captured.
+    private static string FormatStopOrderType(IbkrOpenOrder order) =>
+        order.OrderType.Contains("TRAIL", StringComparison.OrdinalIgnoreCase)
+            ? order.TrailingPercent is { } pct ? $"TRAIL {pct:0.##}%" : "TRAIL"
+            : order.OrderType;
 
     private static string PositionKey(IbkrPosition position) =>
         position.SecType == "OPT" ? (position.LocalSymbol ?? "").Replace(" ", "") : position.Symbol;
