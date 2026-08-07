@@ -166,4 +166,32 @@ public class OpenPositionRepository : IOpenPositionRepository
             throw;
         }
     }
+
+    /// <inheritdoc/>
+    public async Task MarkPendingCloseAsync(string orderId, string outcome, CancellationToken ct = default)
+    {
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            await _db.OpenPositions
+                .Where(p => p.OrderId == orderId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(p => p.PendingCloseOutcome, outcome)
+                    .SetProperty(p => p.PendingCloseSince, p => p.PendingCloseSince ?? now), ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to mark pending close for open position OrderId: {OrderId}", orderId);
+            throw;
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<List<OpenPosition>> GetPendingCloseAsync(CancellationToken ct = default)
+    {
+        return await _db.OpenPositions.AsTracking()
+            .Where(p => p.PendingCloseOutcome != null)
+            .ToListAsync(ct);
+    }
 }

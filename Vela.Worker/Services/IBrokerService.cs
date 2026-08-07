@@ -222,6 +222,7 @@ public record IbkrPosition(
 
 /// <summary>
 /// A single open order in the IBKR account, returned by GetAllOpenOrdersAsync.
+/// TrailingPercent is only populated for TRAIL orders, null for STP/LMT/other types.
 /// </summary>
 public record IbkrOpenOrder(
     int OrderId,
@@ -233,7 +234,8 @@ public record IbkrOpenOrder(
     double Quantity,
     string Status,
     double? AuxPrice,
-    double? LmtPrice);
+    double? LmtPrice,
+    double? TrailingPercent = null);
 
 /// <summary>
 /// Live account-level snapshot returned by GetAccountSnapshotAsync.

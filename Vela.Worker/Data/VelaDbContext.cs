@@ -143,6 +143,8 @@ public class VelaDbContext : DbContext
             entity.Property(p => p.OpenedAt).HasColumnName("opened_at");
             entity.Property(p => p.IsAverage).HasColumnName("is_average");
             entity.Property(p => p.HasAveraged).HasColumnName("has_averaged");
+            entity.Property(p => p.PendingCloseOutcome).HasColumnName("pending_close_outcome");
+            entity.Property(p => p.PendingCloseSince).HasColumnName("pending_close_since");
         });
 
         modelBuilder.Entity<SystemState>(entity =>

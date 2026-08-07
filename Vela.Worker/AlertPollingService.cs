@@ -88,6 +88,11 @@ public class AlertPollingService : BackgroundService
 
         try
         {
+            // Runs every cycle ahead of the Xtrades fetch, independent of alert availability, so
+            // a close deferred overnight while IB Gateway is down retries as soon as it
+            // reconnects rather than waiting on the original exit alert to still be on the page.
+            await _execution.RetryPendingClosesAsync(stoppingToken);
+
             using var scope = _scopeFactory.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<IAlertRepository>();
 

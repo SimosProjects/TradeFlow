@@ -295,7 +295,11 @@ public class IbkrEWrapper : EWrapper
                     AuxPrice: order.OrderType.Contains("TRAIL", StringComparison.OrdinalIgnoreCase)
                         ? (order.TrailStopPrice == double.MaxValue ? null : order.TrailStopPrice)
                         : (order.AuxPrice == double.MaxValue ? null : order.AuxPrice),
-                    LmtPrice: order.LmtPrice == double.MaxValue ? null : order.LmtPrice));
+                    LmtPrice: order.LmtPrice == double.MaxValue ? null : order.LmtPrice,
+                    TrailingPercent: order.OrderType.Contains("TRAIL", StringComparison.OrdinalIgnoreCase) &&
+                        order.TrailingPercent != double.MaxValue
+                        ? order.TrailingPercent
+                        : null));
             }
         }
     }

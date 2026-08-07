@@ -78,6 +78,57 @@ public class IbSnapshotFormatterTests
     }
 
     [Fact]
+    public void BuildSnapshotMessage_TrailingStop_ShowsTrailPercent()
+    {
+        var account = new AccountSnapshot(
+            NetLiquidation: 127843m,
+            TotalCash:      42615m,
+            BuyingPower:    84230m,
+            TodayPnL:       623m,
+            TimedOut:       false);
+
+        var positions = new List<IbkrPosition>
+        {
+            new("NVDA", "STK", null, 57, 40.10m),
+        };
+
+        var orders = new List<IbkrOpenOrder>
+        {
+            new(1, "NVDA", "STK", null, "SELL", "TRAIL", 57, "Submitted", 39.62, null, TrailingPercent: 15.0),
+        };
+
+        var message = IbSnapshotFormatter.BuildSnapshotMessage(account, positions, orders);
+
+        message.Should().Contain("SELL 57 @ 39.62 (TRAIL 15%)");
+    }
+
+    [Fact]
+    public void BuildSnapshotMessage_FixedStop_ShowsStpWithNoPercent()
+    {
+        var account = new AccountSnapshot(
+            NetLiquidation: 127843m,
+            TotalCash:      42615m,
+            BuyingPower:    84230m,
+            TodayPnL:       623m,
+            TimedOut:       false);
+
+        var positions = new List<IbkrPosition>
+        {
+            new("NVDA", "STK", null, 57, 40.10m),
+        };
+
+        var orders = new List<IbkrOpenOrder>
+        {
+            new(1, "NVDA", "STK", null, "SELL", "STP", 57, "Submitted", 39.62, null),
+        };
+
+        var message = IbSnapshotFormatter.BuildSnapshotMessage(account, positions, orders);
+
+        message.Should().Contain("SELL 57 @ 39.62 (STP)");
+        message.Should().NotContain("%");
+    }
+
+    [Fact]
     public void ParseOccContract_MultiCharacterRoot_ParsesCorrectly()
     {
         var result = IbSnapshotFormatter.ParseOccContract("SPXW260714C07595000");
