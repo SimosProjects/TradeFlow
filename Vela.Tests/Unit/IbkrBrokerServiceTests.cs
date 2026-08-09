@@ -1,4 +1,5 @@
 using System.Reflection;
+using IBApi;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -115,6 +116,113 @@ public class IbkrBrokerServiceTests
         connection.Dispose();
     }
 
+    // -- PlaceTrailWithTargetAsync OCA target-leg rejection detection (2026-08-04 MPC incident) --
+
+    [Fact]
+    public async Task PlaceTrailWithTargetAsync_TargetLegRejected_FallsBackAndReturnsNullTarget()
+    {
+        var (broker, connection, logger) = BuildDisconnectedBroker();
+        var contract = new Contract { Symbol = "MPC", SecType = "STK" };
+
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "PlaceTrailWithTargetAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var task = (Task<(string? StopId, string? TargetId)>)method!.Invoke(
+            broker, ["MPC", "15381", 15383, 15384, contract, 12, 5.0, 325.985m, CancellationToken.None])!;
+
+        // Give the method a moment to register both rejection watchers before simulating
+        // IBKR's [110] rejection on the target leg — the exact failure from the MPC incident,
+        // where nothing was watching for a rejection on this specific order ID.
+        await Task.Delay(50);
+        connection.Wrapper.error(
+            15384, 110, "The price does not conform to the minimum price variation for this contract.");
+
+        var (stopId, targetId) = await task;
+
+        targetId.Should().BeNull();
+        stopId.Should().NotBeNull();
+        logger.Warnings.Should().ContainSingle(w =>
+            w.Contains("falling back to trail-only") && w.Contains("MPC"));
+        logger.Debugs.Should().NotContain(d => d.Contains("confirmed live"));
+
+        connection.Dispose();
+    }
+
+    [Fact]
+    public async Task PlaceTrailWithTargetAsync_StopLegRejected_FallsBackAndReturnsNullTarget()
+    {
+        // Regression check: the rewrite from a single rejection watcher to Task.WhenAny over
+        // two must not break the stop-leg rejection path, which already worked before this fix.
+        var (broker, connection, logger) = BuildDisconnectedBroker();
+        var contract = new Contract { Symbol = "TEST", SecType = "STK" };
+
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "PlaceTrailWithTargetAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var task = (Task<(string? StopId, string? TargetId)>)method!.Invoke(
+            broker, ["TEST", "20001", 20003, 20004, contract, 10, 5.0, 100.00m, CancellationToken.None])!;
+
+        await Task.Delay(50);
+        connection.Wrapper.error(20003, 201, "Order rejected - reason:margin insufficient");
+
+        var (stopId, targetId) = await task;
+
+        targetId.Should().BeNull();
+        logger.Warnings.Should().ContainSingle(w => w.Contains("falling back to trail-only"));
+        logger.Debugs.Should().NotContain(d => d.Contains("confirmed live"));
+
+        connection.Dispose();
+    }
+
+    [Fact]
+    public async Task PlaceTrailWithTargetAsync_NeitherLegRejected_ReturnsBothIdsAndLogsConfirmedLive()
+    {
+        var (broker, connection, logger) = BuildDisconnectedBroker();
+        var contract = new Contract { Symbol = "TEST", SecType = "STK" };
+
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "PlaceTrailWithTargetAsync", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var task = (Task<(string? StopId, string? TargetId)>)method!.Invoke(
+            broker, ["TEST", "20001", 20003, 20004, contract, 10, 5.0, 100.00m, CancellationToken.None])!;
+
+        var (stopId, targetId) = await task;
+
+        stopId.Should().Be("20003");
+        targetId.Should().Be("20004");
+        logger.Debugs.Should().ContainSingle(d => d.Contains("confirmed live") && d.Contains("TEST"));
+        logger.Warnings.Should().BeEmpty();
+
+        connection.Dispose();
+    }
+
+    // -- BuildOcaLimitOrder tick rounding (the root cause of the MPC incident) --
+
+    [Fact]
+    public void BuildOcaLimitOrder_UnroundedPrice_RoundsToNearestCent()
+    {
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "BuildOcaLimitOrder", BindingFlags.NonPublic | BindingFlags.Static);
+
+        var order = (Order)method!.Invoke(null, [15384, 12, 325.987m, "OCA_TEST"])!;
+
+        order.LmtPrice.Should().Be(325.99);
+    }
+
+    [Fact]
+    public void BuildOcaLimitOrder_TheExactMpcIncidentPrice_NoLongerSubmitsAnInvalidTick()
+    {
+        // The exact unrounded target price from the 2026-08-04 MPC incident (OrderId 15384) —
+        // three decimal places is not a valid $0.01 stock tick and IBKR rejected it with [110].
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "BuildOcaLimitOrder", BindingFlags.NonPublic | BindingFlags.Static);
+
+        var order = (Order)method!.Invoke(null, [15384, 12, 325.985m, "OCA_TEST"])!;
+
+        order.LmtPrice.Should().NotBe(325.985);
+        (order.LmtPrice * 100).Should().BeApproximately(Math.Round(order.LmtPrice * 100), 0.0001);
+    }
+
     private static (IbkrBrokerService Broker, IbkrConnectionService Connection, CapturingLogger<IbkrBrokerService> Logger)
         BuildDisconnectedBroker()
     {
@@ -142,6 +250,7 @@ public class IbkrBrokerServiceTests
     private sealed class CapturingLogger<T> : ILogger<T>
     {
         public List<string> Warnings { get; } = new();
+        public List<string> Debugs { get; } = new();
 
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => NoopDisposable.Instance;
 
@@ -153,6 +262,8 @@ public class IbkrBrokerServiceTests
         {
             if (logLevel == LogLevel.Warning)
                 Warnings.Add(formatter(state, exception));
+            else if (logLevel == LogLevel.Debug)
+                Debugs.Add(formatter(state, exception));
         }
 
         private sealed class NoopDisposable : IDisposable

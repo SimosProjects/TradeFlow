@@ -171,4 +171,33 @@ public class IbkrEWrapperTests
         Assert.Equal(1, observed!.FilledQuantity);
         Assert.Equal(4.25m, observed.AvgFillPrice);
     }
+
+    // The 2026-08-04 MPC incident: IBKR rejected an OCA target order with [110], an error code
+    // with no dedicated branch in error(). Before this fix only 201/404/103 resolved a
+    // registered rejection callback, so a [110] against a watched order id fell through to the
+    // generic log-only branch and PlaceTrailWithTargetAsync's 600ms detection window expired
+    // unresolved, reporting the leg as placed when IBKR had already rejected it.
+    [Fact]
+    public async Task Error_UnhandledCodeOnWatchedOrder_ResolvesRejectionCallback()
+    {
+        var wrapper = new IbkrEWrapper(NullLogger<IbkrEWrapper>.Instance);
+        var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        wrapper.RegisterStopRejectionCallback(15384, tcs);
+
+        wrapper.error(15384, 110, "The price does not conform to the minimum price variation for this contract.");
+
+        Assert.True(tcs.Task.IsCompletedSuccessfully);
+        Assert.Contains("minimum price variation", await tcs.Task);
+        Assert.Contains("minimum price variation", wrapper.TakeRejectionReason(15384));
+    }
+
+    [Fact]
+    public void Error_UnhandledCodeOnUnwatchedOrder_DoesNotThrow()
+    {
+        var wrapper = new IbkrEWrapper(NullLogger<IbkrEWrapper>.Instance);
+
+        var ex = Record.Exception(() => wrapper.error(99999, 110, "Some unrelated rejection."));
+
+        Assert.Null(ex);
+    }
 }

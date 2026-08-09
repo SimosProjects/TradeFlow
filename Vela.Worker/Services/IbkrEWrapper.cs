@@ -740,6 +740,24 @@ public class IbkrEWrapper : EWrapper
         else
         {
             _logger.LogError("IBKR Error [{Code}] Id {Id}: {Message}", errorCode, id, errorMsg);
+
+            // Same reasoning as the 103 branch above, generalized: any error-level code IBKR
+            // sends against a watched order ID is a rejection of that order, not just the
+            // specific codes anticipated elsewhere. The 2026-08-04 MPC incident was a [110]
+            // price-variation rejection on an OCA target leg that nothing was watching for —
+            // it fell through to this branch, was logged, and nothing else. Without resolving
+            // the TCS here, PlaceTrailWithTargetAsync's detection window expires unresolved and
+            // the caller reports the leg as placed when IBKR already rejected it.
+            lock (_lock)
+            {
+                _rejectionReasons[id] = errorMsg;
+
+                if (_stopRejectionCallbacks.TryGetValue(id, out var rejTcs))
+                {
+                    rejTcs.TrySetResult(errorMsg);
+                    _stopRejectionCallbacks.Remove(id);
+                }
+            }
         }
     }
 

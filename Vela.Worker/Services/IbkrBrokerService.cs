@@ -541,7 +541,7 @@ public class IbkrBrokerService : IBrokerService
         // so neither triggers a [110] price variation rejection from IBKR.
         var minTick = GetOptionsMinTick(order);
         var entryLimitPrice = order.LimitPrice.HasValue
-            ? (decimal)Math.Round(Math.Round((double)order.LimitPrice.Value / minTick) * minTick, 2)
+            ? RoundToTick(order.LimitPrice.Value, minTick)
             : (decimal?)null;
 
         var entryOrder = entryLimitPrice.HasValue
@@ -563,7 +563,7 @@ public class IbkrBrokerService : IBrokerService
         // Place entry with a temporary fixed STP as bracket child so there is always
         // stop protection in place while we wait for the actual fill confirmation.
         var tempStopId = orderId + 1;
-        var roundedStop = Math.Round(Math.Round((double)order.StopPrice / minTick) * minTick, 2);
+        var roundedStop = (double)RoundToTick(order.StopPrice, minTick);
         var tempStopOrder = BuildStopOrder(tempStopId, orderId, order.Quantity, roundedStop);
 
         entryOrder.Transmit = false;
@@ -640,11 +640,11 @@ public class IbkrBrokerService : IBrokerService
                 (finalStopId, finalTargetId) = await PlaceTrailWithTargetAsync(
                     order.Symbol, orderId.ToString(), trailStopId, targetOrderId, contract,
                     fillQty, order.TrailPercent, order.TargetPrice, ct);
-
-                _logger.LogDebug(
-                    "IBKR trail+target placed for Spyglass {Symbol} — Qty: {Qty} Trail: {Trail}% Target: ${Target:F2} StopId: {StopId} TargetId: {TargetId}",
-                    order.Symbol, fillQty, order.TrailPercent, order.TargetPrice,
-                    finalStopId ?? "NONE", finalTargetId ?? "NONE");
+                // PlaceTrailWithTargetAsync logs the actual outcome itself — either a "confirmed
+                // live" success once both legs survive rejection detection, or the "falling back
+                // to trail-only" warning. No unconditional log here: this call site cannot know
+                // which of those two happened, and logging "placed" regardless was the reason
+                // the 2026-08-04 MPC target rejection went unnoticed for 5 days.
             }
             else
             {
@@ -950,11 +950,8 @@ public class IbkrBrokerService : IBrokerService
                     (lateFinalStopId, lateFinalTargetId) = await PlaceTrailWithTargetAsync(
                         order.Symbol, orderId.ToString(), trailStopId, targetOrderId, contract,
                         actualLateFillQty, order.TrailPercent, order.TargetPrice, ct);
-
-                    _logger.LogDebug(
-                        "IBKR trail+target placed for Spyglass {Symbol} late fill — Qty: {Qty} Trail: {Trail}% Target: ${Target:F2} StopId: {StopId} TargetId: {TargetId}",
-                        order.Symbol, actualLateFillQty, order.TrailPercent, order.TargetPrice,
-                        lateFinalStopId ?? "NONE", lateFinalTargetId ?? "NONE");
+                    // See the equivalent comment at the normal-fill call site — no unconditional
+                    // log here, PlaceTrailWithTargetAsync already logs the actual outcome.
                 }
                 else
                 {
@@ -1882,6 +1879,12 @@ public class IbkrBrokerService : IBrokerService
             : 0.05;
     }
 
+    // Rounds a price to the nearest valid tick to avoid IBKR's [110] "price does not conform
+    // to the minimum price variation" rejection. Shared by the entry limit and temp stop in
+    // PlaceOrderAsync and the OCA target leg in BuildOcaLimitOrder.
+    private static decimal RoundToTick(decimal price, double minTick) =>
+        (decimal)Math.Round(Math.Round((double)price / minTick) * minTick, 2);
+
     private static Contract BuildContract(TradeOrder order) =>
         BuildContract(order.Symbol, order.TradeType, order.Direction, order.Strike, order.Expiration);
 
@@ -2000,13 +2003,19 @@ public class IbkrBrokerService : IBrokerService
 
     // Limit sell order in an OCA group. Used as profit target alongside an OCA trail stop.
     // Transmit=true so placing this order transmits both this and a held trail stop atomically.
+    // limitPrice is rounded to the minimum tick (always $0.01 here, this path is stock-only per
+    // ShouldPlaceTargetOrder) to avoid IBKR's [110] price variation rejection — the same defense
+    // PlaceOrderAsync already applies to the entry limit and temp stop, which this leg never had.
+    // The 2026-08-04 MPC incident: an unrounded target price ($325.985, three decimals) was
+    // rejected with [110], and because the trail stop transmits atomically with this order
+    // (Transmit=false until this one sends), the stop was never transmitted either.
     private static Order BuildOcaLimitOrder(int orderId, int quantity, decimal limitPrice, string ocaGroup) =>
         new()
         {
             OrderId = orderId,
             Action = "SELL",
             OrderType = "LMT",
-            LmtPrice = (double)limitPrice,
+            LmtPrice = (double)RoundToTick(limitPrice, 0.01),
             TotalQuantity = quantity,
             OcaGroup = ocaGroup,
             OcaType = 1,
@@ -2029,10 +2038,16 @@ public class IbkrBrokerService : IBrokerService
         };
 
     // Places OCA trail stop + limit target for stock entries with a computed price target.
-    // The trail order is held (Transmit=false) until the target order transmits both atomically.
-    // Both orders share an OCA group so whichever fills first cancels the other.
-    // Falls back to trail-only via PlaceTrailWithFallbackAsync if IBKR rejects the OCA group.
-    // Returns (StopId, TargetId); TargetId is null when the fallback path is used.
+    // The trail order is held (Transmit=false) until the target order transmits both atomically,
+    // so a rejection of either leg means neither is genuinely live at IBKR.
+    // Both legs are watched independently for rejection — the 2026-08-04 MPC incident happened
+    // because only the stop leg was watched, so the target's [110] price-variation rejection
+    // went undetected and this method reported both legs as placed when only the stop existed
+    // (and even that was never actually transmitted, since the target never triggered it).
+    // Falls back to trail-only via PlaceTrailWithFallbackAsync if either leg is rejected.
+    // Returns (StopId, TargetId); TargetId is null when the fallback path is used. The success
+    // log fires only here, after both legs have survived the rejection window — never at the
+    // call site, which cannot know whether IBKR has actually confirmed anything yet.
     private async Task<(string? StopId, string? TargetId)> PlaceTrailWithTargetAsync(
         string symbol,
         string entryOrderId,
@@ -2051,9 +2066,12 @@ public class IbkrBrokerService : IBrokerService
 
         var targetOrder = BuildOcaLimitOrder(targetOrderId, quantity, targetPrice, ocaGroup);
 
-        var rejectionTcs = new TaskCompletionSource<string?>(
+        var stopRejectionTcs = new TaskCompletionSource<string?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        _connection.Wrapper.RegisterStopRejectionCallback(trailStopId, rejectionTcs);
+        var targetRejectionTcs = new TaskCompletionSource<string?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _connection.Wrapper.RegisterStopRejectionCallback(trailStopId, stopRejectionTcs);
+        _connection.Wrapper.RegisterStopRejectionCallback(targetOrderId, targetRejectionTcs);
 
         _connection.Client.placeOrder(trailStopId, contract, trailOrder);
         _connection.Client.placeOrder(targetOrderId, contract, targetOrder);
@@ -2063,20 +2081,40 @@ public class IbkrBrokerService : IBrokerService
         {
             using var checkCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             checkCts.CancelAfter(TimeSpan.FromMilliseconds(600));
-            rejection = await rejectionTcs.Task.WaitAsync(checkCts.Token);
+
+            // Whichever leg rejects first (if either does) resolves this — both must survive
+            // the window for the pair to be trusted as live.
+            var firstToComplete = await Task.WhenAny(stopRejectionTcs.Task, targetRejectionTcs.Task)
+                .WaitAsync(checkCts.Token);
+            rejection = await firstToComplete;
         }
         catch (OperationCanceledException)
         {
+            // Neither leg rejected within the window — both accepted.
+        }
+        finally
+        {
             _connection.Wrapper.UnregisterStopRejectionCallback(trailStopId);
+            _connection.Wrapper.UnregisterStopRejectionCallback(targetOrderId);
         }
 
         if (rejection is null)
         {
             RegisterStopOrderCallbacks(int.Parse(entryOrderId), trailStopId, targetOrderId, quantity);
+
+            _logger.LogDebug(
+                "IBKR trail+target confirmed live for Spyglass {Symbol} — Qty: {Qty} Trail: {Trail}% " +
+                "Target: ${Target:F2} StopId: {StopId} TargetId: {TargetId}",
+                symbol, quantity, trailPercent, targetPrice, trailStopId, targetOrderId);
+
             return (trailStopId.ToString(), targetOrderId.ToString());
         }
 
-        // OCA rejected, cancel the target and fall back to trail-only
+        // Either leg rejected — cancel both regardless of which one it was, the atomic
+        // Transmit=false linkage means the other leg's true state cannot be assumed, and a
+        // redundant cancel on an already-dead order is harmless (see the 10147/10148 handling
+        // in IbkrEWrapper). Then fall back to trail-only.
+        _connection.Client.cancelOrder(trailStopId);
         _connection.Client.cancelOrder(targetOrderId);
         _logger.LogWarning(
             "OCA trail+target rejected for Spyglass {Symbol} — falling back to trail-only. Reason: {Reason}",
