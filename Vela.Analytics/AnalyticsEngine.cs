@@ -83,6 +83,7 @@ public class ReportData
     // -- Reconciliation Integrity --
     public int TotalReconciliationEvents { get; init; }
     public int AutoCorrectedCount { get; init; }
+    public int OperatorConfirmedCount { get; init; }
     public int DetectedCount { get; init; }
     public int FlaggedForReviewCount { get; init; }
     public List<ReconciliationTypeStats> ReconciliationTypeBreakdown { get; init; } = [];
@@ -91,6 +92,8 @@ public class ReportData
 /// <summary>
 /// Customer-facing classification for a rejection or reconciliation event.
 /// AutoCorrected: the system detected and resolved the issue with no operator involvement.
+/// OperatorConfirmed: the system detected the issue and proposed a fix; an operator confirmed
+/// the specific action (e.g. Vela.Guardian's interactive prompt) and it succeeded.
 /// Detected: informational, not a problem (e.g. recognizing a manually-placed trade) or a
 /// safety-driven decline where no capital was at risk.
 /// FlaggedForReview: the system could not resolve this itself and surfaced it for a human.
@@ -98,6 +101,7 @@ public class ReportData
 public enum EventCategory
 {
     AutoCorrected,
+    OperatorConfirmed,
     Detected,
     FlaggedForReview
 }
@@ -212,6 +216,7 @@ public class AnalyticsEngine
         ["GhostPositionRemoved"]       = (EventCategory.AutoCorrected,    "Stale Position Automatically Removed"),
         ["ShortOrZeroPositionRemoved"] = (EventCategory.AutoCorrected,    "Closed Position Automatically Removed"),
         ["QuantityMismatchCorrected"]  = (EventCategory.AutoCorrected,    "Position Quantity Automatically Reconciled"),
+        ["RepairSucceeded"]            = (EventCategory.OperatorConfirmed, "Protective Order Repaired (Operator Confirmed)"),
         ["ManualPositionDetected"]     = (EventCategory.Detected,         "Manually-Placed Trade Recognized & Tracked"),
         ["UnknownOrderDetected"]       = (EventCategory.FlaggedForReview, "Unrecognized Order Flagged for Review"),
         ["PositionMissWarning"]        = (EventCategory.FlaggedForReview, "Position Miss Flagged"),
@@ -519,6 +524,7 @@ public class AnalyticsEngine
             // Reconciliation Integrity
             TotalReconciliationEvents = reconciliationEvents.Count,
             AutoCorrectedCount = classifiedEvents.Count(x => x.Classification.Category == EventCategory.AutoCorrected),
+            OperatorConfirmedCount = classifiedEvents.Count(x => x.Classification.Category == EventCategory.OperatorConfirmed),
             DetectedCount = classifiedEvents.Count(x => x.Classification.Category == EventCategory.Detected),
             FlaggedForReviewCount = classifiedEvents.Count(x => x.Classification.Category == EventCategory.FlaggedForReview),
             ReconciliationTypeBreakdown = classifiedEvents

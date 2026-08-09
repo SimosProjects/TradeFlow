@@ -40,6 +40,7 @@ public class AnalyticsEngineTests
     [InlineData("GhostPositionRemoved", EventCategory.AutoCorrected, "Stale Position Automatically Removed")]
     [InlineData("ShortOrZeroPositionRemoved", EventCategory.AutoCorrected, "Closed Position Automatically Removed")]
     [InlineData("QuantityMismatchCorrected", EventCategory.AutoCorrected, "Position Quantity Automatically Reconciled")]
+    [InlineData("RepairSucceeded", EventCategory.OperatorConfirmed, "Protective Order Repaired (Operator Confirmed)")]
     [InlineData("ManualPositionDetected", EventCategory.Detected, "Manually-Placed Trade Recognized & Tracked")]
     [InlineData("UnknownOrderDetected", EventCategory.FlaggedForReview, "Unrecognized Order Flagged for Review")]
     [InlineData("PositionMissWarning", EventCategory.FlaggedForReview, "Position Miss Flagged")]

@@ -303,11 +303,17 @@ try
                     Console.WriteLine(
                         $"✅ Stop placed — OrderId {newOrderId}, Target OrderId {newTargetOrderId}. " +
                         "Confirmed live at IB. Database updated.");
+                    await LogReconciliationEventAsync(
+                        host.Services, "RepairSucceeded", ibkrPosition.Symbol, newOrderId,
+                        $"Stop OrderId {newOrderId}, Target OrderId {newTargetOrderId}");
                 }
                 else
                 {
                     await repo.UpdateStopOrderIdAsync(matched.OrderId, newOrderId);
                     Console.WriteLine($"✅ Stop placed — OrderId {newOrderId}. Confirmed live at IB. Database updated.");
+                    await LogReconciliationEventAsync(
+                        host.Services, "RepairSucceeded", ibkrPosition.Symbol, newOrderId,
+                        $"Stop OrderId {newOrderId}");
                 }
             }
         }

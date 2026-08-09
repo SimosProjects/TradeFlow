@@ -38,6 +38,7 @@ public class HtmlReportGenerator
   .kpi .value.green { color: #16a34a; }
   .kpi .value.red { color: #dc2626; }
   .kpi .value.amber { color: #d97706; }
+  .kpi .value.teal { color: #0f766e; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th { background: #1f4e79; color: white; padding: 10px 12px;
        text-align: left; font-weight: 600; font-size: 12px; }
@@ -53,6 +54,7 @@ public class HtmlReportGenerator
   .badge.stopped { background: #fee2e2; color: #dc2626; }
   .badge.xtrades { background: #fef9c3; color: #854d0e; }
   .badge.corrected { background: #dcfce7; color: #16a34a; }
+  .badge.confirmed { background: #ccfbf1; color: #0f766e; }
   .badge.detected { background: #dbeafe; color: #1d4ed8; }
   .badge.flagged { background: #fef3c7; color: #b45309; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
@@ -524,14 +526,17 @@ public class HtmlReportGenerator
         var kpis = KpiGrid(
             Kpi("Total Events",       d.TotalReconciliationEvents.ToString()),
             Kpi("Auto-Corrected",     d.AutoCorrectedCount.ToString(), "green"),
-            Kpi("Detected",           d.DetectedCount.ToString()),
-            Kpi("Flagged for Review", d.FlaggedForReviewCount.ToString(), d.FlaggedForReviewCount > 0 ? "amber" : ""));
+            Kpi("Operator-Confirmed", d.OperatorConfirmedCount.ToString(), "teal"),
+            Kpi("Flagged for Review", d.FlaggedForReviewCount.ToString(), d.FlaggedForReviewCount > 0 ? "amber" : ""),
+            Kpi("Detected",           d.DetectedCount.ToString()));
 
         var note = @"<p style=""font-size:12px;color:#64748b;margin-top:12px"">
     Vela continuously reconciles its tracked positions against the live IBKR account.
-    Auto-Corrected events were detected and resolved with no operator involvement. Detected
-    events are informational, such as recognizing a manually-placed trade. Flagged events
-    required, or currently require, operator attention.
+    Auto-Corrected events were detected and resolved with no operator involvement.
+    Operator-Confirmed events were detected and resolved through Guardian's interactive
+    prompt, a human confirmed the specific action before it was taken. Flagged events
+    required, or currently require, operator attention. Detected events are informational,
+    such as recognizing a manually-placed trade.
   </p>";
 
         if (d.ReconciliationTypeBreakdown.Count == 0)
@@ -541,17 +546,19 @@ public class HtmlReportGenerator
         {
             var badgeClass = r.Category switch
             {
-                EventCategory.AutoCorrected    => "corrected",
-                EventCategory.Detected         => "detected",
-                EventCategory.FlaggedForReview => "flagged",
-                _                              => "detected"
+                EventCategory.AutoCorrected     => "corrected",
+                EventCategory.OperatorConfirmed => "confirmed",
+                EventCategory.Detected          => "detected",
+                EventCategory.FlaggedForReview  => "flagged",
+                _                               => "detected"
             };
             var categoryLabel = r.Category switch
             {
-                EventCategory.AutoCorrected    => "Auto-Corrected",
-                EventCategory.Detected         => "Detected",
-                EventCategory.FlaggedForReview => "Flagged for Review",
-                _                              => r.Category.ToString()
+                EventCategory.AutoCorrected     => "Auto-Corrected",
+                EventCategory.OperatorConfirmed => "Operator-Confirmed",
+                EventCategory.Detected          => "Detected",
+                EventCategory.FlaggedForReview  => "Flagged for Review",
+                _                               => r.Category.ToString()
             };
             return $@"<tr>
         <td>{r.Label}</td>
