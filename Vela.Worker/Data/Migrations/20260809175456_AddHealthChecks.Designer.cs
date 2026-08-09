@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Vela.Worker.Data;
@@ -11,9 +12,11 @@ using Vela.Worker.Data;
 namespace Vela.Worker.Data.Migrations
 {
     [DbContext(typeof(VelaDbContext))]
-    partial class VelaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260809175456_AddHealthChecks")]
+    partial class AddHealthChecks
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -675,10 +678,6 @@ namespace Vela.Worker.Data.Migrations
                     b.Property<int>("Quantity")
                         .HasColumnType("integer")
                         .HasColumnName("quantity");
-
-                    b.Property<int>("RequestedQuantity")
-                        .HasColumnType("integer")
-                        .HasColumnName("requested_quantity");
 
                     b.Property<string>("SessionLocation")
                         .HasColumnType("text")

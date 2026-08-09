@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Vela.Worker.Data;
@@ -11,9 +12,11 @@ using Vela.Worker.Data;
 namespace Vela.Worker.Data.Migrations
 {
     [DbContext(typeof(VelaDbContext))]
-    partial class VelaDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260809175213_AddReconciliationEvents")]
+    partial class AddReconciliationEvents
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -214,52 +217,6 @@ namespace Vela.Worker.Data.Migrations
                         .HasDatabaseName("idx_force_close_requests_status");
 
                     b.ToTable("force_close_requests", (string)null);
-                });
-
-            modelBuilder.Entity("Vela.Worker.Data.HealthCheck", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer")
-                        .HasColumnName("id");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTimeOffset>("CheckedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("checked_at");
-
-                    b.Property<string>("IbkrStatus")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("ibkr_status");
-
-                    b.Property<string>("PostgresStatus")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("postgres_status");
-
-                    b.Property<string>("SignalrStatus")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("signalr_status");
-
-                    b.Property<string>("WorkerStatus")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("worker_status");
-
-                    b.Property<string>("XtradesStatus")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("xtrades_status");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CheckedAt")
-                        .HasDatabaseName("idx_health_checks_checked_at");
-
-                    b.ToTable("health_checks", (string)null);
                 });
 
             modelBuilder.Entity("Vela.Worker.Data.OpenPosition", b =>
@@ -675,10 +632,6 @@ namespace Vela.Worker.Data.Migrations
                     b.Property<int>("Quantity")
                         .HasColumnType("integer")
                         .HasColumnName("quantity");
-
-                    b.Property<int>("RequestedQuantity")
-                        .HasColumnType("integer")
-                        .HasColumnName("requested_quantity");
 
                     b.Property<string>("SessionLocation")
                         .HasColumnType("text")

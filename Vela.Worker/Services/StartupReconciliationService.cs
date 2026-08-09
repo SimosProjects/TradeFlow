@@ -31,6 +31,7 @@ public class StartupReconciliationService
     private readonly GhostPositionCloseOutService _closeOut;
     private readonly TradeGuard _guard;
     private readonly DiscordNotificationService _discord;
+    private readonly IReconciliationEventsRepository _reconciliationEvents;
     private readonly ILogger<StartupReconciliationService> _logger;
 
     public StartupReconciliationService(
@@ -39,15 +40,30 @@ public class StartupReconciliationService
         GhostPositionCloseOutService closeOut,
         TradeGuard guard,
         DiscordNotificationService discord,
+        IReconciliationEventsRepository reconciliationEvents,
         ILogger<StartupReconciliationService> logger)
     {
-        _broker   = broker;
-        _repo     = repo;
-        _closeOut = closeOut;
-        _guard    = guard;
-        _discord  = discord;
-        _logger   = logger;
+        _broker               = broker;
+        _repo                 = repo;
+        _closeOut             = closeOut;
+        _guard                = guard;
+        _discord              = discord;
+        _reconciliationEvents = reconciliationEvents;
+        _logger               = logger;
     }
+
+    // Writes a mismatch to reconciliation_events. Best-effort: a write failure here must not
+    // affect the reconciliation flow, SaveAsync already swallows and logs its own errors.
+    private Task LogEventAsync(string eventType, string? symbol, string? orderId, string? detail, CancellationToken ct) =>
+        _reconciliationEvents.SaveAsync(new ReconciliationEvent
+        {
+            CreatedAt = DateTimeOffset.UtcNow,
+            Source    = "StartupReconciliation",
+            EventType = eventType,
+            Symbol    = symbol,
+            OrderId   = orderId,
+            Detail    = detail,
+        }, ct);
 
     /// <summary>
     /// Runs all reconciliation steps. Called from Program.cs before host.Run().
@@ -189,6 +205,10 @@ public class StartupReconciliationService
                 _logger.LogWarning(
                     "Startup reconciliation — cover order placed for {Symbol} qty {Qty}.",
                     shortPos.Symbol, coverQty);
+
+                await LogEventAsync(
+                    "ShortCovered", shortPos.Symbol, null,
+                    $"qty {coverQty} avgCost ${shortPos.AvgCost:F2}", ct);
             }
             catch (Exception ex)
             {
@@ -201,6 +221,8 @@ public class StartupReconciliationService
                     $"Could not automatically cover short position in {shortPos.Symbol} " +
                     $"(qty {shortPos.Quantity}). MANUAL INTERVENTION REQUIRED.\nError: {ex.Message}",
                     ct);
+
+                await LogEventAsync("ShortCoverFailed", shortPos.Symbol, null, ex.Message, ct);
             }
         }
     }
@@ -246,6 +268,10 @@ public class StartupReconciliationService
                     "but not found in IBKR. It has been removed from Vela. " +
                     "This may indicate the position was closed while Vela was offline.",
                     ct);
+
+                await LogEventAsync(
+                    "GhostPositionRemoved", dbPos.Symbol, dbPos.OrderId,
+                    "Not found in IBKR", ct);
                 continue;
             }
 
@@ -259,6 +285,10 @@ public class StartupReconciliationService
                 await _closeOut.CloseOutAsync(dbPos, ct);
                 await _repo.DeleteAsync(dbPos.OrderId, ct);
                 _guard.RemovePosition(dbPos.OrderId);
+
+                await LogEventAsync(
+                    "ShortOrZeroPositionRemoved", dbPos.Symbol, dbPos.OrderId,
+                    $"IBKR qty {ibkrMatch.Quantity}", ct);
                 continue;
             }
 
@@ -271,6 +301,10 @@ public class StartupReconciliationService
 
                 await _repo.UpdateQuantityAsync(dbPos.OrderId, ibkrMatch.Quantity, ct);
                 _guard.UpdatePositionQuantity(dbPos.OrderId, ibkrMatch.Quantity);
+
+                await LogEventAsync(
+                    "QuantityMismatchCorrected", dbPos.Symbol, dbPos.OrderId,
+                    $"DB={dbPos.Quantity} IBKR={ibkrMatch.Quantity}", ct);
             }
             else
             {
@@ -331,6 +365,10 @@ public class StartupReconciliationService
                 (is0Dte ? " ⚠️ This position expires today." : "");
 
             await _discord.NotifyCriticalAsync(title, message, ct);
+
+            await LogEventAsync(
+                "ManualPositionDetected", ibkrPos.Symbol, manualPos.OrderId,
+                $"qty {ibkrPos.Quantity} @ ${ibkrPos.AvgCost:F2} 0DTE={is0Dte}", ct);
         }
     }
 
@@ -372,6 +410,10 @@ public class StartupReconciliationService
                 "Type: {Type} Qty: {Qty} Status: {Status}",
                 order.OrderId, order.Symbol, order.Action,
                 order.OrderType, order.Quantity, order.Status);
+
+            await LogEventAsync(
+                "UnknownOrderDetected", order.Symbol, order.OrderId.ToString(),
+                $"{order.Action} {order.OrderType} qty {order.Quantity} ({order.Status})", ct);
         }
 
         var details = string.Join("\n", unknownOrders.Select(o =>

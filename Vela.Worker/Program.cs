@@ -129,6 +129,9 @@ builder.Services.AddSingleton<DiscordNotificationService>();
 builder.Services.AddScoped<IAlertRepository, AlertRepository>();
 builder.Services.AddScoped<IOpenPositionRepository, OpenPositionRepository>();
 builder.Services.AddScoped<ITradeMetricsRepository, TradeMetricsRepository>();
+builder.Services.AddScoped<IOrderRejectionsRepository, OrderRejectionsRepository>();
+builder.Services.AddScoped<IReconciliationEventsRepository, ReconciliationEventsRepository>();
+builder.Services.AddScoped<IHealthChecksRepository, HealthChecksRepository>();
 builder.Services.AddScoped<GhostPositionCloseOutService>();
 builder.Services.AddSingleton(sp =>
     new PositionSizer(
@@ -254,11 +257,12 @@ if (ibkrEnabled)
     await Task.Delay(TimeSpan.FromSeconds(3));
 
     using var reconScope = host.Services.CreateScope();
-    var broker   = host.Services.GetRequiredService<IBrokerService>();
-    var repo     = reconScope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
+    var broker = host.Services.GetRequiredService<IBrokerService>();
+    var repo = reconScope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
     var closeOut = reconScope.ServiceProvider.GetRequiredService<GhostPositionCloseOutService>();
-    var guard    = host.Services.GetRequiredService<TradeGuard>();
-    var discord  = host.Services.GetRequiredService<DiscordNotificationService>();
+    var guard = host.Services.GetRequiredService<TradeGuard>();
+    var discord = host.Services.GetRequiredService<DiscordNotificationService>();
+    var reconciliationEvents = reconScope.ServiceProvider.GetRequiredService<IReconciliationEventsRepository>();
 
     var reconciliation = new StartupReconciliationService(
         broker,
@@ -266,6 +270,7 @@ if (ibkrEnabled)
         closeOut,
         guard,
         discord,
+        reconciliationEvents,
         host.Services.GetRequiredService<ILogger<StartupReconciliationService>>());
 
     await reconciliation.RunAsync();

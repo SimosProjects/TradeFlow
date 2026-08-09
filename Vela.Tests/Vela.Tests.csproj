@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Vela.Worker\Vela.Worker.csproj" />
     <ProjectReference Include="..\Vela.Api\Vela.Api.csproj" />
+    <ProjectReference Include="..\Vela.Analytics\Vela.Analytics.csproj" />
   </ItemGroup>
 
 </Project>
