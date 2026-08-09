@@ -32,7 +32,8 @@ public class PeriodicReconciliationServiceTests : IDisposable
     private (
         PeriodicReconciliationService Svc,
         TradeGuard Guard,
-        Mock<IOpenPositionRepository> Repo)
+        Mock<IOpenPositionRepository> Repo,
+        Mock<IReconciliationEventsRepository> ReconciliationEvents)
         BuildService()
     {
         var broker = new Mock<IBrokerService>();
@@ -70,9 +71,15 @@ public class PeriodicReconciliationServiceTests : IDisposable
             .Build();
         var csv = new CsvTradeLogger(csvConfig, NullLogger<CsvTradeLogger>.Instance);
 
+        var reconciliationEvents = new Mock<IReconciliationEventsRepository>();
+        reconciliationEvents.Setup(r => r.SaveAsync(
+                It.IsAny<ReconciliationEvent>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
         var services = new ServiceCollection();
         services.AddScoped<IOpenPositionRepository>(_ => repo.Object);
         services.AddScoped<ITradeMetricsRepository>(_ => metrics.Object);
+        services.AddScoped<IReconciliationEventsRepository>(_ => reconciliationEvents.Object);
         services.AddScoped(_ => new GhostPositionCloseOutService(
             broker.Object, metrics.Object, csv, NullLogger<GhostPositionCloseOutService>.Instance));
         var scopeFactory = services.BuildServiceProvider()
@@ -85,7 +92,7 @@ public class PeriodicReconciliationServiceTests : IDisposable
             scopeFactory,
             NullLogger<PeriodicReconciliationService>.Instance);
 
-        return (svc, guard, repo);
+        return (svc, guard, repo, reconciliationEvents);
     }
 
     private static OpenPosition StockDbPosition(string symbol, string orderId, int qty = 5) =>
@@ -129,22 +136,35 @@ public class PeriodicReconciliationServiceTests : IDisposable
     [Fact]
     public async Task CheckManagedPositions_WhenIbkrMatchHasZeroQty_TreatedAsMissLikeNoMatch()
     {
-        var (svc, guard, repo) = BuildService();
+        var (svc, guard, repo, reconciliationEvents) = BuildService();
         guard.LoadFromDatabase([StockDbPosition("TSLA", "9905")]);
 
         // IBKR still returns a row for TSLA, but qty is 0 — position is actually closed.
         // Two consecutive misses matches AutoCleanupAfterMisses, same as a fully-missing row.
         await svc.CheckManagedPositionsAsync([StockPos("TSLA", 0)], CancellationToken.None);
+        reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "PositionMissWarning" &&
+                e.Symbol    == "TSLA" &&
+                e.OrderId   == "9905"),
+            It.IsAny<CancellationToken>()), Times.Once);
+
         await svc.CheckManagedPositionsAsync([StockPos("TSLA", 0)], CancellationToken.None);
 
         repo.Verify(r => r.DeleteAsync("9905", It.IsAny<CancellationToken>()), Times.Once);
         guard.GetOpenTrades().Should().BeEmpty();
+        reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "GhostPositionRemoved" &&
+                e.Symbol    == "TSLA" &&
+                e.OrderId   == "9905"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
     public async Task CheckManagedPositions_WhenIbkrMatchHasPositiveQty_ClearsMissStreak()
     {
-        var (svc, guard, repo) = BuildService();
+        var (svc, guard, repo, _) = BuildService();
         guard.LoadFromDatabase([StockDbPosition("TSLA", "9905")]);
 
         // IBKR confirms the position is still open on every cycle — must never be removed.
@@ -162,7 +182,7 @@ public class PeriodicReconciliationServiceTests : IDisposable
     [Fact]
     public async Task CheckManagedPositions_ManualPosition_WhenIbkrMatchHasZeroQty_TreatedAsMissLikeNoMatch()
     {
-        var (svc, guard, repo) = BuildService();
+        var (svc, guard, repo, _) = BuildService();
         var manual = ManualStockDbPosition("SPX", "MANUAL-SPX-1784295727968");
         repo.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync([manual]);
@@ -183,7 +203,7 @@ public class PeriodicReconciliationServiceTests : IDisposable
     [Fact]
     public async Task CheckManagedPositions_ManualPosition_WhenIbkrMatchHasPositiveQty_IsNotTouched()
     {
-        var (svc, _, repo) = BuildService();
+        var (svc, _, repo, _) = BuildService();
         var manual = ManualStockDbPosition("SPX", "MANUAL-SPX-1784295727968");
         repo.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync([manual]);
@@ -196,6 +216,42 @@ public class PeriodicReconciliationServiceTests : IDisposable
 
         repo.Verify(r => r.DeleteAsync(
             It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // -- DetectNewManualPositionsAsync / CleanClosedManualPositionsAsync --
+
+    [Fact]
+    public async Task DetectNewManualPositions_WhenUntrackedLongExists_LogsManualPositionDetectedEvent()
+    {
+        var (svc, _, _, reconciliationEvents) = BuildService();
+
+        await svc.DetectNewManualPositionsAsync(
+            [StockPos("AMD", 5)], new OrdersSnapshot([], false), CancellationToken.None);
+
+        reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "ManualPositionDetected" &&
+                e.Symbol    == "AMD"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CleanClosedManualPositions_WhenManualPositionNoLongerInIbkr_LogsManualPositionClosedEvent()
+    {
+        var (svc, _, repo, reconciliationEvents) = BuildService();
+        var manual = ManualStockDbPosition("SPX", "MANUAL-SPX-1784295727968");
+        repo.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([manual]);
+
+        // IBKR reports no positions at all — the manual SPX row is gone.
+        await svc.CleanClosedManualPositionsAsync([], CancellationToken.None);
+
+        reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "ManualPositionClosed" &&
+                e.Symbol    == "SPX" &&
+                e.OrderId   == "MANUAL-SPX-1784295727968"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // -- BuildManualPosition parity with StartupReconciliationService (entry_price/entry_amount) --

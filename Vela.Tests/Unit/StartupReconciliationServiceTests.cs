@@ -19,6 +19,10 @@ public class StartupReconciliationServiceTests : IDisposable
 {
     private readonly List<string> _tempDirs = [];
 
+    // Re-assigned per BuildService() call so each test gets a fresh mock while still being
+    // able to Verify against it without changing BuildService()'s return tuple everywhere.
+    private Mock<IReconciliationEventsRepository> _reconciliationEvents = new();
+
     public void Dispose()
     {
         foreach (var dir in _tempDirs)
@@ -81,6 +85,11 @@ public class StartupReconciliationServiceTests : IDisposable
         repo.Setup(r => r.SaveAsync(It.IsAny<OpenPosition>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
+        _reconciliationEvents = new Mock<IReconciliationEventsRepository>();
+        _reconciliationEvents.Setup(r => r.SaveAsync(
+                It.IsAny<ReconciliationEvent>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
         var guard = new TradeGuard(
             broker.Object,
             Options.Create(new RiskEngineOptions()),
@@ -94,7 +103,7 @@ public class StartupReconciliationServiceTests : IDisposable
             NullLogger<GhostPositionCloseOutService>.Instance);
 
         var svc = new StartupReconciliationService(
-            broker.Object, repo.Object, closeOut, guard, discord,
+            broker.Object, repo.Object, closeOut, guard, discord, _reconciliationEvents.Object,
             NullLogger<StartupReconciliationService>.Instance);
 
         return (svc, broker, repo);
@@ -223,6 +232,12 @@ public class StartupReconciliationServiceTests : IDisposable
         await svc.RunAsync();
 
         repo.Verify(r => r.DeleteAsync("2906", It.IsAny<CancellationToken>()), Times.Once);
+        _reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "GhostPositionRemoved" &&
+                e.Symbol    == "TSLA" &&
+                e.OrderId   == "2906"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -239,6 +254,12 @@ public class StartupReconciliationServiceTests : IDisposable
         await svc.RunAsync();
 
         repo.Verify(r => r.DeleteAsync("2906", It.IsAny<CancellationToken>()), Times.Once);
+        _reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "ShortOrZeroPositionRemoved" &&
+                e.Symbol    == "TSLA" &&
+                e.OrderId   == "2906"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -255,6 +276,12 @@ public class StartupReconciliationServiceTests : IDisposable
 
         repo.Verify(r => r.UpdateQuantityAsync("2906", 2, It.IsAny<CancellationToken>()), Times.Once);
         repo.Verify(r => r.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "QuantityMismatchCorrected" &&
+                e.Symbol    == "TSLA" &&
+                e.OrderId   == "2906"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -333,6 +360,11 @@ public class StartupReconciliationServiceTests : IDisposable
                 t.TradeType       == TradeType.Stock),
             TradeOutcome.ForcedClose,
             It.IsAny<CancellationToken>()), Times.Once);
+        _reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "ShortCovered" &&
+                e.Symbol    == "TSLA"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -392,6 +424,11 @@ public class StartupReconciliationServiceTests : IDisposable
                 p.Symbol   == "AMD" &&
                 p.IsManual == true  &&
                 p.UserName == "MANUAL"),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "ManualPositionDetected" &&
+                e.Symbol    == "AMD"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -467,5 +504,35 @@ public class StartupReconciliationServiceTests : IDisposable
         broker.Setup(b => b.IsKnownOrder(9999)).Returns(false);
 
         await svc.Invoking(s => s.RunAsync()).Should().NotThrowAsync();
+
+        _reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "UnknownOrderDetected" &&
+                e.Symbol    == "AMD" &&
+                e.OrderId   == "9999"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // -- Step 1: CoverShortsAsync failure path --
+
+    [Fact]
+    public async Task CoverShorts_WhenBrokerThrows_LogsShortCoverFailedEvent()
+    {
+        var (svc, broker, _) = BuildService();
+
+        broker.Setup(b => b.GetAllPositionsAsync(It.IsAny<CancellationToken>()))
+              .ReturnsAsync(new PositionsSnapshot([StockPos("TSLA", -3)], false));
+        broker.Setup(b => b.ClosePositionAsync(
+                It.IsAny<TradeRecord>(), It.IsAny<TradeOutcome>(), It.IsAny<CancellationToken>()))
+              .ThrowsAsync(new InvalidOperationException("Gateway unreachable"));
+
+        await svc.Invoking(s => s.RunAsync()).Should().NotThrowAsync();
+
+        _reconciliationEvents.Verify(r => r.SaveAsync(
+            It.Is<ReconciliationEvent>(e =>
+                e.EventType == "ShortCoverFailed" &&
+                e.Symbol    == "TSLA" &&
+                e.Detail    == "Gateway unreachable"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 }

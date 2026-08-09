@@ -738,6 +738,7 @@ public class BrokerExecutionService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Broker PlaceOrderAsync failed for {Symbol}, skipping", alert.Symbol);
+            await PersistRejectionAsync(alert, order, ex.Message, ct);
             return null;
         }
 
@@ -756,6 +757,8 @@ public class BrokerExecutionService
                     _logger.LogWarning(
                         "Broker rejected retry order for {Symbol} — {Reason}",
                         alert.Symbol, result.RejectionReason ?? result.Status.ToString());
+                    await PersistRejectionAsync(
+                        alert, order, result.RejectionReason ?? result.Status.ToString(), ct);
                     return null;
                 }
             }
@@ -764,6 +767,8 @@ public class BrokerExecutionService
                 _logger.LogWarning(
                     "Broker rejected order for {Symbol} — {Reason}",
                     alert.Symbol, result.RejectionReason ?? result.Status.ToString());
+                await PersistRejectionAsync(
+                    alert, order, result.RejectionReason ?? result.Status.ToString(), ct);
                 return null;
             }
         }
@@ -777,6 +782,26 @@ public class BrokerExecutionService
         }
 
         return result;
+    }
+
+    // Writes a rejected/cancelled/failed entry attempt to order_rejections for analytics.
+    // Best-effort: a write failure here must not affect the entry flow, which already
+    // returns null to HandleEntryAsync regardless of this call's outcome.
+    private async Task PersistRejectionAsync(Alert alert, TradeOrder order, string reason, CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IOrderRejectionsRepository>();
+        await repo.SaveAsync(new OrderRejection
+        {
+            CreatedAt         = DateTimeOffset.UtcNow,
+            AlertId           = alert.Id,
+            TraderName        = order.UserName,
+            Symbol            = order.Symbol,
+            TradeType         = order.TradeType.ToString(),
+            Reason            = reason,
+            RequestedQuantity = order.Quantity,
+            RequestedPrice    = order.LimitPrice ?? order.EstimatedEntryPrice,
+        }, ct);
     }
 
     // Verifies whether a timed-out limit order actually filled by querying the Gateway position.
@@ -1099,6 +1124,7 @@ public class BrokerExecutionService
                 FillPrice                 = result.FillPrice,
                 SlippagePct               = slippagePct,
                 Quantity                  = result.FillQuantity,
+                RequestedQuantity         = order.Quantity,
                 EntryAmount               = result.FillAmount,
                 StopPrice                 = order.StopPrice,
                 TargetPrice               = order.TargetPrice,

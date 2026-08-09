@@ -66,6 +66,7 @@ builder.Services.AddDbContext<VelaDbContext>(options =>
 });
 builder.Services.AddScoped<IOpenPositionRepository, OpenPositionRepository>();
 builder.Services.AddScoped<ITradeMetricsRepository, TradeMetricsRepository>();
+builder.Services.AddScoped<IReconciliationEventsRepository, ReconciliationEventsRepository>();
 
 var host = builder.Build();
 
@@ -172,6 +173,9 @@ try
             Console.WriteLine(
                 $"⚠️  ORPHANED — {ibkrPosition.Symbol}: no matching open_positions record. " +
                 "Skipping — investigate manually.");
+            await LogReconciliationEventAsync(
+                host.Services, "OrphanedPosition", ibkrPosition.Symbol, null,
+                "No matching open_positions record");
             continue;
         }
 
@@ -229,6 +233,9 @@ try
             Console.WriteLine(
                 $"❌ {ibkrPosition.Symbol} has multiple live target/stop orders — cannot safely " +
                 "determine which is real. Manual cleanup required in IB before this position can be remediated.");
+            await LogReconciliationEventAsync(
+                host.Services, "AmbiguousProtection", ibkrPosition.Symbol, null,
+                "Multiple live target/stop orders");
             continue;
         }
 
@@ -281,6 +288,9 @@ try
                     (newTargetOrderId is not null ? $" / Target OrderId {newTargetOrderId}" : "") +
                     " but it does not appear live in a fresh open orders snapshot. " +
                     "Database NOT updated — manual verification required in IB before trusting this order.");
+                await LogReconciliationEventAsync(
+                    host.Services, "OrderNotConfirmedLive", ibkrPosition.Symbol, newOrderId,
+                    "Not live in fresh open orders snapshot");
             }
             else
             {
@@ -309,12 +319,18 @@ try
             Console.WriteLine(
                 $"❌ Failed to safely re-pair {ibkrPosition.Symbol} — existing target order may " +
                 "still be live alongside no new protection. Manual check required in IB.");
+            await LogReconciliationEventAsync(
+                host.Services, "RepairFailed", ibkrPosition.Symbol, null,
+                "Existing target order may still be live alongside no new protection");
         }
         else
         {
             Console.WriteLine(
                 "❌ IBKR rejected the order. Nothing placed, database not touched. " +
                 "Manual placement required.");
+            await LogReconciliationEventAsync(
+                host.Services, "StopPlacementRejected", ibkrPosition.Symbol, null,
+                "IBKR rejected the order");
         }
     }
 
@@ -347,7 +363,12 @@ try
             Console.WriteLine("None.");
         else
             foreach (var position in stillUnprotected)
+            {
                 Console.WriteLine($"{Label(position)} — qty {position.Quantity} @ avgCost ${position.AvgCost:F2}");
+                await LogReconciliationEventAsync(
+                    host.Services, "StillUnprotected", Label(position), null,
+                    $"qty {position.Quantity} @ avgCost ${position.AvgCost:F2}");
+            }
 
         Console.WriteLine();
         Console.WriteLine("⚠️  DUPLICATE STOPS DETECTED (needs manual cleanup):");
@@ -356,7 +377,12 @@ try
             Console.WriteLine("None.");
         else
             foreach (var position in duplicates)
+            {
                 Console.WriteLine($"{Label(position)} — qty {position.Quantity} @ avgCost ${position.AvgCost:F2}");
+                await LogReconciliationEventAsync(
+                    host.Services, "DuplicateStopDetected", Label(position), null,
+                    $"qty {position.Quantity} @ avgCost ${position.AvgCost:F2}");
+            }
     }
 }
 finally
@@ -365,6 +391,25 @@ finally
     Console.WriteLine("Disconnecting...");
     connection.Dispose();
     Console.WriteLine("Done.");
+}
+
+// Writes a reconciliation mismatch to reconciliation_events. Best-effort: a write failure
+// here must not block the interactive remediation flow, SaveAsync already swallows and
+// logs its own errors.
+static async Task LogReconciliationEventAsync(
+    IServiceProvider services, string eventType, string? symbol, string? orderId, string? detail)
+{
+    using var scope = services.CreateScope();
+    var repo = scope.ServiceProvider.GetRequiredService<IReconciliationEventsRepository>();
+    await repo.SaveAsync(new ReconciliationEvent
+    {
+        CreatedAt = DateTimeOffset.UtcNow,
+        Source    = "Guardian",
+        EventType = eventType,
+        Symbol    = symbol,
+        OrderId   = orderId,
+        Detail    = detail,
+    });
 }
 
 // Display label for a position: LocalSymbol (options, e.g. "TSLA260620C00450000") or Symbol (stocks).

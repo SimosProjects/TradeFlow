@@ -52,6 +52,9 @@ public class HtmlReportGenerator
   .badge.target { background: #dcfce7; color: #16a34a; }
   .badge.stopped { background: #fee2e2; color: #dc2626; }
   .badge.xtrades { background: #fef9c3; color: #854d0e; }
+  .badge.corrected { background: #dcfce7; color: #16a34a; }
+  .badge.detected { background: #dbeafe; color: #1d4ed8; }
+  .badge.flagged { background: #fef3c7; color: #b45309; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   .chart-container { width: 100%; overflow-x: auto; }
   svg.chart { width: 100%; min-width: 500px; }
@@ -110,7 +113,10 @@ public class HtmlReportGenerator
             BuildLatencySection(data),
             BuildExposureSection(data),
             BuildChartSection(data),
-            BuildTradesSection(data));
+            BuildTradesSection(data),
+            BuildExecutionQualitySection(data),
+            BuildReliabilitySection(data),
+            BuildReconciliationSection(data));
 
         return $@"<!DOCTYPE html>
 <html lang=""en"">
@@ -425,7 +431,148 @@ public class HtmlReportGenerator
   </div>");
     }
 
+    // -- Section 11: Execution Quality --
+    private static string BuildExecutionQualitySection(ReportData d)
+    {
+        var rejectionRateClass = d.RejectionRatePct > 15 ? "red" : d.RejectionRatePct > 5 ? "amber" : "";
+        var partialFillClass   = d.PartialFillRatePct > 10 ? "amber" : "";
+
+        var kpis = KpiGrid(
+            Kpi("Entry Attempts",  d.TotalEntryAttempts.ToString()),
+            Kpi("Orders Filled",   d.TotalTrades.ToString(), "green"),
+            Kpi("Orders Declined", d.OrdersRejectedCount.ToString()),
+            Kpi("Decline Rate",    $"{d.RejectionRatePct:F1}%", rejectionRateClass),
+            Kpi("Partial Fills",   d.PartialFillCount.ToString(), partialFillClass),
+            Kpi("Avg Fill Ratio",  $"{d.AvgFillRatioPct:F1}%"));
+
+        var note = @"<p style=""font-size:12px;color:#64748b;margin-top:12px"">
+    Declined entries represent capital that was never put at risk, the system either hit a
+    broker-side safety check (price protection, NBBO) or verified no fill occurred before
+    recording anything. Entries requiring review are broken out below.
+  </p>";
+
+        if (d.RejectionRows.Count == 0)
+            return Section("11. Execution Quality", kpis + note);
+
+        var rows = string.Concat(d.RejectionRows.Select(r =>
+        {
+            var etTime     = TimeZoneInfo.ConvertTime(r.CreatedAt, Et);
+            var badgeClass = r.Category == EventCategory.FlaggedForReview ? "flagged" : "detected";
+            return $@"<tr>
+        <td>{etTime:MM/dd HH:mm}</td>
+        <td><strong>{r.Symbol}</strong></td>
+        <td>{r.TradeType}</td>
+        <td>{r.TraderName}</td>
+        <td>{r.RequestedQuantity}</td>
+        <td>{(r.RequestedPrice.HasValue ? $"${r.RequestedPrice:F2}" : "—")}</td>
+        <td>{r.Reason}</td>
+        <td><span class=""badge {badgeClass}"">{r.Label}</span></td>
+      </tr>";
+        }));
+
+        var table = $@"<div style=""overflow-x:auto"">
+    <table>
+      <thead><tr>
+        <th>Date ET</th><th>Symbol</th><th>Type</th><th>Trader</th>
+        <th>Requested Qty</th><th>Requested Price</th><th>Reason</th><th>Status</th>
+      </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>";
+
+        return Section("11. Execution Quality", kpis + note + table);
+    }
+
+    // -- Section 12: System Reliability --
+    private static string BuildReliabilitySection(ReportData d)
+    {
+        var kpis = KpiGrid(
+            Kpi("Health Checks Run", d.TotalHealthChecks.ToString()),
+            Kpi("IB Gateway Uptime", $"{d.IbkrUptimePct:F1}%",     UptimeClass(d.IbkrUptimePct)),
+            Kpi("PostgreSQL Uptime", $"{d.PostgresUptimePct:F1}%", UptimeClass(d.PostgresUptimePct)),
+            Kpi("Xtrades Uptime",    $"{d.XtradesUptimePct:F1}%",  UptimeClass(d.XtradesUptimePct)));
+
+        if (d.TotalHealthChecks == 0)
+            return Section("12. System Reliability", NoData("No health checks recorded in this period."));
+
+        if (d.HealthIncidents.Count == 0)
+            return Section("12. System Reliability",
+                kpis + NoData("No incidents — all scheduled health checks passed."));
+
+        var rows = string.Concat(d.HealthIncidents.Select(h =>
+        {
+            var etTime = TimeZoneInfo.ConvertTime(h.CheckedAt, Et);
+            return $@"<tr>
+        <td>{etTime:MM/dd HH:mm}</td>
+        <td>{h.IbkrStatus}</td>
+        <td>{h.PostgresStatus}</td>
+        <td>{h.XtradesStatus}</td>
+      </tr>";
+        }));
+
+        var table = $@"<br><table>
+    <thead><tr><th>Date ET</th><th>IB Gateway</th><th>PostgreSQL</th><th>Xtrades</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>";
+
+        return Section("12. System Reliability", kpis + table);
+    }
+
+    // -- Section 13: Reconciliation Integrity --
+    private static string BuildReconciliationSection(ReportData d)
+    {
+        var kpis = KpiGrid(
+            Kpi("Total Events",       d.TotalReconciliationEvents.ToString()),
+            Kpi("Auto-Corrected",     d.AutoCorrectedCount.ToString(), "green"),
+            Kpi("Detected",           d.DetectedCount.ToString()),
+            Kpi("Flagged for Review", d.FlaggedForReviewCount.ToString(), d.FlaggedForReviewCount > 0 ? "amber" : ""));
+
+        var note = @"<p style=""font-size:12px;color:#64748b;margin-top:12px"">
+    Vela continuously reconciles its tracked positions against the live IBKR account.
+    Auto-Corrected events were detected and resolved with no operator involvement. Detected
+    events are informational, such as recognizing a manually-placed trade. Flagged events
+    required, or currently require, operator attention.
+  </p>";
+
+        if (d.ReconciliationTypeBreakdown.Count == 0)
+            return Section("13. Reconciliation Integrity", kpis + note);
+
+        var rows = string.Concat(d.ReconciliationTypeBreakdown.Select(r =>
+        {
+            var badgeClass = r.Category switch
+            {
+                EventCategory.AutoCorrected    => "corrected",
+                EventCategory.Detected         => "detected",
+                EventCategory.FlaggedForReview => "flagged",
+                _                              => "detected"
+            };
+            var categoryLabel = r.Category switch
+            {
+                EventCategory.AutoCorrected    => "Auto-Corrected",
+                EventCategory.Detected         => "Detected",
+                EventCategory.FlaggedForReview => "Flagged for Review",
+                _                              => r.Category.ToString()
+            };
+            return $@"<tr>
+        <td>{r.Label}</td>
+        <td><span class=""badge {badgeClass}"">{categoryLabel}</span></td>
+        <td>{r.Count}</td>
+        <td>{r.PctOfTotal:F1}%</td>
+      </tr>";
+        }));
+
+        var table = $@"<br><table>
+    <thead><tr><th>Event</th><th>Category</th><th>Count</th><th>% of Total</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>";
+
+        return Section("13. Reconciliation Integrity", kpis + note + table);
+    }
+
     // -- Helpers --
+
+    private static string UptimeClass(decimal uptimePct) =>
+        uptimePct < 90 ? "red" : uptimePct < 99 ? "amber" : "green";
 
     private static string Kpi(string label, string value, string colorClass = "") =>
         $@"<div class=""kpi"">

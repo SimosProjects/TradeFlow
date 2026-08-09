@@ -63,6 +63,75 @@ public class ReportData
 
     // -- All trades for detail table --
     public List<TradeRow> AllTrades { get; init; } = [];
+
+    // -- Execution Quality --
+    public int TotalEntryAttempts { get; init; }
+    public int OrdersRejectedCount { get; init; }
+    public decimal RejectionRatePct { get; init; }
+    public int PartialFillCount { get; init; }
+    public decimal PartialFillRatePct { get; init; }
+    public decimal AvgFillRatioPct { get; init; }
+    public List<OrderRejectionRow> RejectionRows { get; init; } = [];
+
+    // -- System Reliability --
+    public int TotalHealthChecks { get; init; }
+    public decimal IbkrUptimePct { get; init; }
+    public decimal PostgresUptimePct { get; init; }
+    public decimal XtradesUptimePct { get; init; }
+    public List<HealthIncidentRow> HealthIncidents { get; init; } = [];
+
+    // -- Reconciliation Integrity --
+    public int TotalReconciliationEvents { get; init; }
+    public int AutoCorrectedCount { get; init; }
+    public int DetectedCount { get; init; }
+    public int FlaggedForReviewCount { get; init; }
+    public List<ReconciliationTypeStats> ReconciliationTypeBreakdown { get; init; } = [];
+}
+
+/// <summary>
+/// Customer-facing classification for a rejection or reconciliation event.
+/// AutoCorrected: the system detected and resolved the issue with no operator involvement.
+/// Detected: informational, not a problem (e.g. recognizing a manually-placed trade) or a
+/// safety-driven decline where no capital was at risk.
+/// FlaggedForReview: the system could not resolve this itself and surfaced it for a human.
+/// </summary>
+public enum EventCategory
+{
+    AutoCorrected,
+    Detected,
+    FlaggedForReview
+}
+
+public class OrderRejectionRow
+{
+    public DateTimeOffset CreatedAt { get; init; }
+    public string? Symbol { get; init; }
+    public string? TradeType { get; init; }
+    public string? TraderName { get; init; }
+    public int RequestedQuantity { get; init; }
+    public decimal? RequestedPrice { get; init; }
+    public string Reason { get; init; } = string.Empty;
+    public EventCategory Category { get; init; }
+    public string Label { get; init; } = string.Empty;
+}
+
+public class HealthIncidentRow
+{
+    public DateTimeOffset CheckedAt { get; init; }
+    public string WorkerStatus { get; init; } = string.Empty;
+    public string IbkrStatus { get; init; } = string.Empty;
+    public string PostgresStatus { get; init; } = string.Empty;
+    public string XtradesStatus { get; init; } = string.Empty;
+    public string SignalrStatus { get; init; } = string.Empty;
+}
+
+public class ReconciliationTypeStats
+{
+    public string EventType { get; init; } = string.Empty;
+    public string Label { get; init; } = string.Empty;
+    public EventCategory Category { get; init; }
+    public int Count { get; init; }
+    public decimal PctOfTotal { get; init; }
 }
 
 public class TraderStats
@@ -132,6 +201,40 @@ public class AnalyticsEngine
     private static readonly TimeZoneInfo Et =
         TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
 
+    // Maps each reconciliation_events EventType to its customer-facing category and label.
+    // Reviewed and confirmed 2026-08-09 before this became customer-facing copy. An
+    // unrecognized EventType falls back to FlaggedForReview in ClassifyReconciliationEvent
+    // rather than being silently treated as resolved.
+    private static readonly Dictionary<string, (EventCategory Category, string Label)> ReconciliationEventMap = new()
+    {
+        ["ShortCovered"]               = (EventCategory.AutoCorrected,    "Short Position Automatically Covered"),
+        ["ShortCoverFailed"]           = (EventCategory.FlaggedForReview, "Short Cover Attempt Failed"),
+        ["GhostPositionRemoved"]       = (EventCategory.AutoCorrected,    "Stale Position Automatically Removed"),
+        ["ShortOrZeroPositionRemoved"] = (EventCategory.AutoCorrected,    "Closed Position Automatically Removed"),
+        ["QuantityMismatchCorrected"]  = (EventCategory.AutoCorrected,    "Position Quantity Automatically Reconciled"),
+        ["ManualPositionDetected"]     = (EventCategory.Detected,         "Manually-Placed Trade Recognized & Tracked"),
+        ["UnknownOrderDetected"]       = (EventCategory.FlaggedForReview, "Unrecognized Order Flagged for Review"),
+        ["PositionMissWarning"]        = (EventCategory.FlaggedForReview, "Position Miss Flagged"),
+        ["ManualPositionClosed"]       = (EventCategory.AutoCorrected,    "Manual Position Tracking Automatically Closed"),
+        ["OrphanedPosition"]           = (EventCategory.FlaggedForReview, "Untracked Unprotected Position Flagged"),
+        ["AmbiguousProtection"]        = (EventCategory.FlaggedForReview, "Ambiguous Protective Orders Flagged"),
+        ["OrderNotConfirmedLive"]      = (EventCategory.FlaggedForReview, "Stop Placement Unconfirmed"),
+        ["RepairFailed"]               = (EventCategory.FlaggedForReview, "Protective Order Repair Failed"),
+        ["StopPlacementRejected"]      = (EventCategory.FlaggedForReview, "Stop Order Placement Rejected"),
+        ["StillUnprotected"]           = (EventCategory.FlaggedForReview, "Position Still Unprotected (Final Check)"),
+        ["DuplicateStopDetected"]      = (EventCategory.FlaggedForReview, "Duplicate Stop Orders Flagged"),
+    };
+
+    // Benign prefixes mean the system declined an entry as a safety measure (price protection,
+    // NBBO rejection, or a verified non-fill) — no capital was ever at risk. Anything else,
+    // including exception-catch messages like broker connectivity failures, is flagged rather
+    // than assumed benign.
+    private static readonly string[] BenignRejectionPrefixes =
+    [
+        "PRICE_PROTECTION:",
+        "NBBO_REJECTION",
+    ];
+
     public AnalyticsEngine(VelaDbContext db, ILogger<AnalyticsEngine> logger)
     {
         _db = db;
@@ -175,6 +278,40 @@ public class AnalyticsEngine
 
         var options_trades = trades.Where(t => t.TradeType == "Options").ToList();
         var stock_trades   = trades.Where(t => t.TradeType == "Stock").ToList();
+
+        // Rejected/cancelled/failed entry attempts in the same period
+        var rejections = await _db.OrderRejections
+            .AsNoTracking()
+            .Where(r => r.CreatedAt >= options.From
+                     && r.CreatedAt <  options.To)
+            .OrderBy(r => r.CreatedAt)
+            .ToListAsync();
+
+        // Reconciliation mismatches detected against IBKR or the CSV trade log
+        var reconciliationEvents = await _db.ReconciliationEvents
+            .AsNoTracking()
+            .Where(e => e.CreatedAt >= options.From
+                     && e.CreatedAt <  options.To)
+            .OrderBy(e => e.CreatedAt)
+            .ToListAsync();
+
+        // Scheduled system health check snapshots
+        var healthChecks = await _db.HealthChecks
+            .AsNoTracking()
+            .Where(h => h.CheckedAt >= options.From
+                     && h.CheckedAt <  options.To)
+            .OrderBy(h => h.CheckedAt)
+            .ToListAsync();
+
+        var (partialFillCount, partialFillRatePct, avgFillRatioPct) = CalculatePartialFillStats(trades);
+
+        var classifiedRejections = rejections
+            .Select(r => (Rejection: r, Classification: ClassifyRejection(r.Reason)))
+            .ToList();
+
+        var classifiedEvents = reconciliationEvents
+            .Select(e => (Event: e, Classification: ClassifyReconciliationEvent(e.EventType)))
+            .ToList();
 
         return new ReportData
         {
@@ -338,6 +475,66 @@ public class AnalyticsEngine
                 Outcome         = t.Outcome,
                 ClosedAt        = t.ClosedAt,
             }).ToList(),
+
+            // Execution Quality
+            TotalEntryAttempts = trades.Count + rejections.Count,
+            OrdersRejectedCount = rejections.Count,
+            RejectionRatePct = (trades.Count + rejections.Count) > 0
+                ? Math.Round((decimal)rejections.Count / (trades.Count + rejections.Count) * 100, 1)
+                : 0,
+            PartialFillCount = partialFillCount,
+            PartialFillRatePct = partialFillRatePct,
+            AvgFillRatioPct = avgFillRatioPct,
+            RejectionRows = classifiedRejections.Select(x => new OrderRejectionRow
+            {
+                CreatedAt         = x.Rejection.CreatedAt,
+                Symbol            = x.Rejection.Symbol,
+                TradeType         = x.Rejection.TradeType,
+                TraderName        = x.Rejection.TraderName,
+                RequestedQuantity = x.Rejection.RequestedQuantity,
+                RequestedPrice    = x.Rejection.RequestedPrice,
+                Reason            = x.Rejection.Reason,
+                Category          = x.Classification.Category,
+                Label             = x.Classification.Label,
+            }).ToList(),
+
+            // System Reliability
+            TotalHealthChecks = healthChecks.Count,
+            IbkrUptimePct     = UptimePct(healthChecks, h => h.IbkrStatus),
+            PostgresUptimePct = UptimePct(healthChecks, h => h.PostgresStatus),
+            XtradesUptimePct  = UptimePct(healthChecks, h => h.XtradesStatus),
+            HealthIncidents = healthChecks
+                .Where(h => !IsHealthy(h.IbkrStatus) || !IsHealthy(h.PostgresStatus) || !IsHealthy(h.XtradesStatus))
+                .Select(h => new HealthIncidentRow
+                {
+                    CheckedAt      = h.CheckedAt,
+                    WorkerStatus   = h.WorkerStatus,
+                    IbkrStatus     = h.IbkrStatus,
+                    PostgresStatus = h.PostgresStatus,
+                    XtradesStatus  = h.XtradesStatus,
+                    SignalrStatus  = h.SignalrStatus,
+                })
+                .ToList(),
+
+            // Reconciliation Integrity
+            TotalReconciliationEvents = reconciliationEvents.Count,
+            AutoCorrectedCount = classifiedEvents.Count(x => x.Classification.Category == EventCategory.AutoCorrected),
+            DetectedCount = classifiedEvents.Count(x => x.Classification.Category == EventCategory.Detected),
+            FlaggedForReviewCount = classifiedEvents.Count(x => x.Classification.Category == EventCategory.FlaggedForReview),
+            ReconciliationTypeBreakdown = classifiedEvents
+                .GroupBy(x => x.Event.EventType)
+                .Select(g => new ReconciliationTypeStats
+                {
+                    EventType  = g.Key,
+                    Label      = g.First().Classification.Label,
+                    Category   = g.First().Classification.Category,
+                    Count      = g.Count(),
+                    PctOfTotal = reconciliationEvents.Count > 0
+                        ? Math.Round((decimal)g.Count() / reconciliationEvents.Count * 100, 1)
+                        : 0,
+                })
+                .OrderByDescending(s => s.Count)
+                .ToList(),
         };
     }
 
@@ -396,4 +593,58 @@ public class AnalyticsEngine
         if (lower == upper) return values[lower];
         return values[lower] + (index - lower) * (values[upper] - values[lower]);
     }
+
+    // Classifies an order_rejections row from its free-text Reason. See BenignRejectionPrefixes.
+    // A null or blank reason falls back to FlaggedForReview rather than throwing — Reason is a
+    // non-nullable DB column in practice, but this must never crash a report over bad data.
+    internal static (EventCategory Category, string Label) ClassifyRejection(string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+            return (EventCategory.FlaggedForReview, "Entry Failed — Requires Review");
+
+        var isBenign = BenignRejectionPrefixes.Any(p =>
+                reason.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+            || reason.Contains("no position confirmed", StringComparison.OrdinalIgnoreCase);
+
+        return isBenign
+            ? (EventCategory.Detected, "Entry Declined — Safety Check")
+            : (EventCategory.FlaggedForReview, "Entry Failed — Requires Review");
+    }
+
+    // Looks up a reconciliation_events EventType in ReconciliationEventMap. An unrecognized
+    // type falls back to FlaggedForReview with its raw name rather than being silently
+    // misrepresented as resolved.
+    internal static (EventCategory Category, string Label) ClassifyReconciliationEvent(string eventType) =>
+        ReconciliationEventMap.TryGetValue(eventType, out var mapped)
+            ? mapped
+            : (EventCategory.FlaggedForReview, eventType);
+
+    // Computes partial-fill metrics from already-loaded trade_metrics rows. Trades with
+    // RequestedQuantity == 0 predate the column (AddRequestedQuantityToTradeMetrics backfilled
+    // existing rows to 0) and are excluded rather than misread as full fills.
+    internal static (int PartialFillCount, decimal PartialFillRatePct, decimal AvgFillRatioPct)
+        CalculatePartialFillStats(List<TradeMetric> trades)
+    {
+        var eligible = trades.Where(t => t.RequestedQuantity > 0).ToList();
+        var partial  = eligible.Where(t => t.Quantity < t.RequestedQuantity).ToList();
+
+        return (
+            PartialFillCount: partial.Count,
+            PartialFillRatePct: eligible.Count > 0
+                ? Math.Round((decimal)partial.Count / eligible.Count * 100, 1)
+                : 0,
+            AvgFillRatioPct: eligible.Count > 0
+                ? Math.Round(eligible.Average(t => (decimal)t.Quantity / t.RequestedQuantity) * 100, 1)
+                : 0);
+    }
+
+    // A status string is healthy only when it starts with the checkmark the Worker's
+    // IBKR/Postgres/Xtrades checks emit on success — degraded (warning) and failure strings
+    // both count as not healthy.
+    private static bool IsHealthy(string status) => status.StartsWith("✅", StringComparison.Ordinal);
+
+    private static decimal UptimePct(List<HealthCheck> checks, Func<HealthCheck, string> selector) =>
+        checks.Count > 0
+            ? Math.Round((decimal)checks.Count(c => IsHealthy(selector(c))) / checks.Count * 100, 1)
+            : 0;
 }

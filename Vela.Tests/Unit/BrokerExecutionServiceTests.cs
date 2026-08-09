@@ -23,6 +23,7 @@ public class BrokerExecutionServiceTests
     private readonly Mock<IBrokerService> _brokerMock = new();
     private readonly Mock<ITradeMetricsRepository> _metricsMock = new();
     private readonly Mock<IOpenPositionRepository> _repoMock = new();
+    private readonly Mock<IOrderRejectionsRepository> _rejectionsMock = new();
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TradeGuard _guard;
     private readonly PositionSizer _sizer;
@@ -92,6 +93,8 @@ public class BrokerExecutionServiceTests
             .Returns(Task.CompletedTask);
         _repoMock.Setup(r => r.DeleteAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
+        _rejectionsMock.Setup(r => r.SaveAsync(It.IsAny<OrderRejection>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         var riskOptions = Options.Create(new RiskEngineOptions());
         _guard = new TradeGuard(_brokerMock.Object, riskOptions, NullLogger<TradeGuard>.Instance);
@@ -100,6 +103,7 @@ public class BrokerExecutionServiceTests
         var services = new ServiceCollection();
         services.AddScoped<ITradeMetricsRepository>(_ => _metricsMock.Object);
         services.AddScoped<IOpenPositionRepository>(_ => _repoMock.Object);
+        services.AddScoped<IOrderRejectionsRepository>(_ => _rejectionsMock.Object);
         _scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
         var config = TestConfig;
@@ -725,6 +729,11 @@ public class BrokerExecutionServiceTests
         _brokerMock.Verify(
             b => b.GetCurrentPositionPriceAsync(It.IsAny<TradeRecord>(), default),
             Times.Never);
+        _rejectionsMock.Verify(r => r.SaveAsync(
+            It.Is<OrderRejection>(o =>
+                o.Symbol == "TSLA" &&
+                o.Reason == "PRICE_PROTECTION:5.90"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -785,6 +794,11 @@ public class BrokerExecutionServiceTests
         _brokerMock.Verify(
             b => b.GetCurrentPositionPriceAsync(It.IsAny<TradeRecord>(), default),
             Times.Never);
+        _rejectionsMock.Verify(r => r.SaveAsync(
+            It.Is<OrderRejection>(o =>
+                o.Symbol == "TSLA" &&
+                o.Reason == "NBBO_REJECTION"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -809,6 +823,29 @@ public class BrokerExecutionServiceTests
         _brokerMock.Verify(
             b => b.GetCurrentPositionPriceAsync(It.IsAny<TradeRecord>(), default),
             Times.Never);
+        _rejectionsMock.Verify(r => r.SaveAsync(
+            It.Is<OrderRejection>(o =>
+                o.Symbol == "TSLA" &&
+                o.Reason == "Cancelled — no position confirmed after fill window"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleEntryAsync_PlaceOrderThrows_LogsOrderRejectionEvent()
+    {
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.IsAny<TradeOrder>(), default))
+            .ThrowsAsync(new InvalidOperationException("Gateway unreachable"));
+
+        var alert = BuildAlert("bto", "options", "call", 4.95m, "TSLA260620C00450000", 450);
+        await _executionMarketOpen.HandleEntryAsync(alert, CallClassification());
+
+        _guard.GetOpenTrades().Should().BeEmpty();
+        _rejectionsMock.Verify(r => r.SaveAsync(
+            It.Is<OrderRejection>(o =>
+                o.Symbol == "TSLA" &&
+                o.Reason == "Gateway unreachable"),
+            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

@@ -54,6 +54,24 @@ public class PeriodicReconciliationService : BackgroundService
         _logger       = logger;
     }
 
+    // Writes a mismatch to reconciliation_events via its own scope. Best-effort: a write
+    // failure here must not affect the reconciliation flow, SaveAsync already swallows and
+    // logs its own errors.
+    private async Task LogEventAsync(string eventType, string? symbol, string? orderId, string? detail, CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IReconciliationEventsRepository>();
+        await repo.SaveAsync(new ReconciliationEvent
+        {
+            CreatedAt = DateTimeOffset.UtcNow,
+            Source    = "PeriodicReconciliation",
+            EventType = eventType,
+            Symbol    = symbol,
+            OrderId   = orderId,
+            Detail    = detail,
+        }, ct);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
@@ -179,6 +197,10 @@ public class PeriodicReconciliationService : BackgroundService
                 "if still absent.",
                 ct);
 
+            await LogEventAsync(
+                "PositionMissWarning", symbol, orderId,
+                $"{misses}/{AutoCleanupAfterMisses} consecutive misses", ct);
+
             return;
         }
 
@@ -210,12 +232,16 @@ public class PeriodicReconciliationService : BackgroundService
             "from Vela tracking. If this position still exists at IBKR, manual reconciliation " +
             "is required.",
             ct);
+
+        await LogEventAsync(
+            "GhostPositionRemoved", symbol, orderId,
+            $"Absent for {misses} consecutive cycles", ct);
     }
 
     // Detects IBKR long positions not tracked in the DB or TradeGuard.
     // These are manual trades placed directly in IBKR. Creates tracking records
     // (is_manual=true) so they appear on the dashboard, no management, tracking only.
-    private async Task DetectNewManualPositionsAsync(
+    internal async Task DetectNewManualPositionsAsync(
         List<IbkrPosition> ibkrPositions,
         OrdersSnapshot ordersSnapshot,
         CancellationToken ct)
@@ -266,12 +292,16 @@ public class PeriodicReconciliationService : BackgroundService
                 (is0Dte ? " ⚠️ This position expires today." : "");
 
             await _discord.NotifyCriticalAsync(title, message, ct);
+
+            await LogEventAsync(
+                "ManualPositionDetected", ibkrPos.Symbol, manualPos.OrderId,
+                $"qty {ibkrPos.Quantity} @ ${ibkrPos.AvgCost:F2} 0DTE={is0Dte}", ct);
         }
     }
 
     // Removes manual tracking records for positions that are no longer in IBKR.
     // The user closed them via IBKR, Vela removes the dashboard entry and notes the closure.
-    private async Task CleanClosedManualPositionsAsync(
+    internal async Task CleanClosedManualPositionsAsync(
         List<IbkrPosition> ibkrPositions,
         CancellationToken ct)
     {
@@ -308,6 +338,10 @@ public class PeriodicReconciliationService : BackgroundService
                 $"Manual tracking position **{manual.Symbol}** " +
                 $"(qty {manual.Quantity}) is no longer in IBKR. Tracking record removed.",
                 ct);
+
+            await LogEventAsync(
+                "ManualPositionClosed", manual.Symbol, manual.OrderId,
+                $"qty {manual.Quantity} no longer in IBKR", ct);
         }
     }
 

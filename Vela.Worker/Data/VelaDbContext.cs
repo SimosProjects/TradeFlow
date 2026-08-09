@@ -26,6 +26,22 @@ public class VelaDbContext : DbContext
     /// ForceCloseConsumerService, which writes the outcome back to Status.
     /// </summary>
     public DbSet<ForceCloseRequest> ForceCloseRequests { get; set; }
+    /// <summary>
+    /// Rejected, cancelled, or failed entry order attempts. Written by BrokerExecutionService
+    /// so rejections are queryable for analytics instead of only appearing in the log stream.
+    /// </summary>
+    public DbSet<OrderRejection> OrderRejections { get; set; }
+    /// <summary>
+    /// Reconciliation mismatches detected against IBKR or the CSV trade log. Written by
+    /// StartupReconciliationService, PeriodicReconciliationService, Vela.Guardian, and
+    /// csv_reconcile.py.
+    /// </summary>
+    public DbSet<ReconciliationEvent> ReconciliationEvents { get; set; }
+    /// <summary>
+    /// Scheduled system health check snapshots. Written by MarketSchedulerService alongside
+    /// the existing Discord health check embed.
+    /// </summary>
+    public DbSet<HealthCheck> HealthChecks { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -103,6 +119,7 @@ public class VelaDbContext : DbContext
             entity.Property(m => m.FillPrice).HasColumnName("fill_price");
             entity.Property(m => m.SlippagePct).HasColumnName("slippage_pct");
             entity.Property(m => m.Quantity).HasColumnName("quantity");
+            entity.Property(m => m.RequestedQuantity).HasColumnName("requested_quantity");
             entity.Property(m => m.EntryAmount).HasColumnName("entry_amount");
             entity.Property(m => m.StopPrice).HasColumnName("stop_price");
             entity.Property(m => m.TargetPrice).HasColumnName("target_price");
@@ -206,6 +223,58 @@ public class VelaDbContext : DbContext
             entity.Property(r => r.Status).HasColumnName("status");
             entity.Property(r => r.RequestedAt).HasColumnName("requested_at");
             entity.Property(r => r.ProcessedAt).HasColumnName("processed_at");
+        });
+
+        modelBuilder.Entity<OrderRejection>(entity =>
+        {
+            entity.ToTable("order_rejections");
+            entity.HasKey(r => r.Id);
+
+            entity.HasIndex(r => r.CreatedAt).HasDatabaseName("idx_order_rejections_created_at");
+            entity.HasIndex(r => r.Symbol).HasDatabaseName("idx_order_rejections_symbol");
+
+            entity.Property(r => r.Id).HasColumnName("id");
+            entity.Property(r => r.CreatedAt).HasColumnName("created_at");
+            entity.Property(r => r.AlertId).HasColumnName("alert_id");
+            entity.Property(r => r.TraderName).HasColumnName("trader_name");
+            entity.Property(r => r.Symbol).HasColumnName("symbol");
+            entity.Property(r => r.TradeType).HasColumnName("trade_type");
+            entity.Property(r => r.Reason).HasColumnName("reason");
+            entity.Property(r => r.RequestedQuantity).HasColumnName("requested_quantity");
+            entity.Property(r => r.RequestedPrice).HasColumnName("requested_price");
+        });
+
+        modelBuilder.Entity<ReconciliationEvent>(entity =>
+        {
+            entity.ToTable("reconciliation_events");
+            entity.HasKey(r => r.Id);
+
+            entity.HasIndex(r => r.CreatedAt).HasDatabaseName("idx_reconciliation_events_created_at");
+            entity.HasIndex(r => r.EventType).HasDatabaseName("idx_reconciliation_events_event_type");
+
+            entity.Property(r => r.Id).HasColumnName("id");
+            entity.Property(r => r.CreatedAt).HasColumnName("created_at");
+            entity.Property(r => r.Source).HasColumnName("source");
+            entity.Property(r => r.EventType).HasColumnName("event_type");
+            entity.Property(r => r.Symbol).HasColumnName("symbol");
+            entity.Property(r => r.OrderId).HasColumnName("order_id");
+            entity.Property(r => r.Detail).HasColumnName("detail");
+        });
+
+        modelBuilder.Entity<HealthCheck>(entity =>
+        {
+            entity.ToTable("health_checks");
+            entity.HasKey(h => h.Id);
+
+            entity.HasIndex(h => h.CheckedAt).HasDatabaseName("idx_health_checks_checked_at");
+
+            entity.Property(h => h.Id).HasColumnName("id");
+            entity.Property(h => h.CheckedAt).HasColumnName("checked_at");
+            entity.Property(h => h.WorkerStatus).HasColumnName("worker_status");
+            entity.Property(h => h.IbkrStatus).HasColumnName("ibkr_status");
+            entity.Property(h => h.PostgresStatus).HasColumnName("postgres_status");
+            entity.Property(h => h.XtradesStatus).HasColumnName("xtrades_status");
+            entity.Property(h => h.SignalrStatus).HasColumnName("signalr_status");
         });
     }
 }

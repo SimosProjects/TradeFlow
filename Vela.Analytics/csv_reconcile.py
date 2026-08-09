@@ -468,6 +468,33 @@ def write_report_csv(output_path: Path, discrepancies: list[dict]) -> None:
             w.writerow([d["type"], d["symbol"], d.get("order_id", ""), d["detail"]])
 
 
+def write_discrepancies_to_db(discrepancies: list[dict]) -> None:
+    """
+    Writes each discrepancy to reconciliation_events (source='CsvReconcile') so CSV/DB
+    mismatches are queryable alongside IBKR reconciliation mismatches instead of only
+    appearing in stdout or an optional --output report file.
+    """
+    if not discrepancies:
+        return
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO reconciliation_events (created_at, source, event_type, symbol, order_id, detail)
+                VALUES (now(), 'CsvReconcile', %s, %s, %s, %s)
+                """,
+                [
+                    (d["type"], d["symbol"], d.get("order_id") or None, d["detail"])
+                    for d in discrepancies
+                ],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # -- Main --
 
 def main():
@@ -515,6 +542,8 @@ def main():
     )
 
     print_report(options_rows, stocks_rows, db_records, all_discrepancies)
+
+    write_discrepancies_to_db(all_discrepancies)
 
     if args.backfill:
         print()

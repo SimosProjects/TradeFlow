@@ -461,6 +461,18 @@ public class MarketSchedulerService : BackgroundService
         };
 
         await PostToWebhookAsync(_healthWebhookUrl, embed, ct);
+
+        using var scope = _scopeFactory.CreateScope();
+        var healthChecks = scope.ServiceProvider.GetRequiredService<IHealthChecksRepository>();
+        await healthChecks.SaveAsync(new HealthCheck
+        {
+            CheckedAt      = DateTimeOffset.UtcNow,
+            WorkerStatus   = workerStatus,
+            IbkrStatus     = ibkrStatus,
+            PostgresStatus = postgresStatus,
+            XtradesStatus  = xtradesStatus,
+            SignalrStatus  = signalrStatus,
+        }, ct);
     }
 
     private async Task SendPositionSummaryAsync(CancellationToken ct)

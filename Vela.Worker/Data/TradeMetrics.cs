@@ -46,8 +46,12 @@ public class TradeMetric
     public decimal FillPrice { get; set; }
     public decimal SlippagePct { get; set; }
 
-    // Position sizing 
+    // Position sizing
     public int Quantity { get; set; }
+
+    // Originally-requested quantity from order-build time, distinct from Quantity (filled
+    // quantity) so a partial fill is distinguishable from a full fill at the requested size.
+    public int RequestedQuantity { get; set; }
     public decimal EntryAmount { get; set; }
     public decimal StopPrice { get; set; }
     public decimal TargetPrice { get; set; }
