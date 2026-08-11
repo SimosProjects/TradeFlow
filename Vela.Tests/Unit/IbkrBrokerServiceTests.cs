@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Vela.Worker.Configuration;
 using Vela.Worker.Data;
+using Vela.Worker.Models;
 using Vela.Worker.Services;
 
 namespace Vela.Tests.Unit;
@@ -221,6 +222,125 @@ public class IbkrBrokerServiceTests
 
         order.LmtPrice.Should().NotBe(325.985);
         (order.LmtPrice * 100).Should().BeApproximately(Math.Round(order.LmtPrice * 100), 0.0001);
+    }
+
+    // -- BuildRejectedCloseResult (the 2026-08-10 TKO incident) --
+
+    [Fact]
+    public void BuildRejectedCloseResult_InactiveStatus_ReturnsRejectedNotFilled()
+    {
+        var (broker, connection, _) = BuildDisconnectedBroker();
+
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "BuildRejectedCloseResult", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        // The exact TKO shape: a market close order IBKR reported Inactive, zero fill.
+        var fill = new OrderFill("Inactive", 0m, 0);
+        var result = (BrokerOrderResult)method!.Invoke(
+            broker, ["TKO", TradeType.Stock, 15864, 13, fill, null])!;
+
+        result.Status.Should().Be(OrderStatus.Rejected);
+        result.FillQuantity.Should().Be(0);
+        result.FillPrice.Should().Be(0m);
+
+        connection.Dispose();
+    }
+
+    [Fact]
+    public void BuildRejectedCloseResult_CancelledStatus_ReturnsCancelledNotFilled()
+    {
+        var (broker, connection, _) = BuildDisconnectedBroker();
+
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "BuildRejectedCloseResult", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var fill = new OrderFill("Cancelled", 0m, 0);
+        var result = (BrokerOrderResult)method!.Invoke(
+            broker, ["TEST", TradeType.Stock, 20001, 10, fill, null])!;
+
+        result.Status.Should().Be(OrderStatus.Cancelled);
+        result.FillQuantity.Should().Be(0);
+
+        connection.Dispose();
+    }
+
+    [Fact]
+    public void BuildRejectedCloseResult_ReadsDetailedReasonWhenIbkrProvidedOne()
+    {
+        var (broker, connection, _) = BuildDisconnectedBroker();
+
+        // The actual IBKR error for TKO, arriving on the same order id shortly after the
+        // Inactive orderStatus callback.
+        connection.Wrapper.error(15864, 201, "Order rejected - reason:Exchange is closed.");
+
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "BuildRejectedCloseResult", BindingFlags.NonPublic | BindingFlags.Instance);
+        var fill = new OrderFill("Inactive", 0m, 0);
+        var result = (BrokerOrderResult)method!.Invoke(
+            broker, ["TKO", TradeType.Stock, 15864, 13, fill, null])!;
+
+        result.RejectionReason.Should().Contain("Exchange is closed");
+
+        connection.Dispose();
+    }
+
+    [Fact]
+    public void BuildRejectedCloseResult_WithGenuinePartialFill_ReturnsPartialFillNotFullQuantity()
+    {
+        var (broker, connection, _) = BuildDisconnectedBroker();
+
+        var method = typeof(IbkrBrokerService).GetMethod(
+            "BuildRejectedCloseResult", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        // 6 of 13 confirmed sold before the remainder went inactive — the 2026-07-17 UBER
+        // incident is exactly this shape: never report the full requested quantity.
+        var fill = new OrderFill("Inactive", 0m, 0);
+        var partial = new OrderFill("Filled", 187.00m, 6);
+        var result = (BrokerOrderResult)method!.Invoke(
+            broker, ["TKO", TradeType.Stock, 15864, 13, fill, partial])!;
+
+        result.Status.Should().Be(OrderStatus.PartialFill);
+        result.FillQuantity.Should().Be(6);
+        result.FillPrice.Should().Be(187.00m);
+
+        connection.Dispose();
+    }
+
+    // -- GetAllPositionsAsync connectivity gap (2026-08-10 TKO / 2026-08-11 MGY investigation) --
+
+    [Fact]
+    public async Task GetAllPositionsAsync_NotConnected_ReturnsTimedOutTrueNotConfirmedEmpty()
+    {
+        // Before the fix this returned PositionsSnapshot([], false) — indistinguishable from
+        // a genuine, successfully-queried empty account, which VerifyCloseExecutedAsync would
+        // read as "position confirmed absent, close executed."
+        var (broker, connection, _) = BuildDisconnectedBroker();
+
+        var snapshot = await broker.GetAllPositionsAsync();
+
+        snapshot.TimedOut.Should().BeTrue();
+        snapshot.Positions.Should().BeEmpty();
+
+        connection.Dispose();
+    }
+
+    // -- GetAllOpenOrdersAsync connectivity gap (same shape, found while fixing GetAllPositionsAsync) --
+
+    [Fact]
+    public async Task GetAllOpenOrdersAsync_NotConnected_ReturnsTimedOutTrueNotConfirmedEmpty()
+    {
+        // Same hazard as GetAllPositionsAsync — a connection failure must not be reported the
+        // same way as a genuine, successfully-queried empty open-orders snapshot. Callers that
+        // gate on TimedOut (StartupReconciliationService.ClassifyOpenOrdersAsync, Vela.Guardian's
+        // ConfirmOrderIsLiveAsync) must be told this was not confirmed.
+        var (broker, connection, _) = BuildDisconnectedBroker();
+
+        var snapshot = await broker.GetAllOpenOrdersAsync();
+
+        snapshot.TimedOut.Should().BeTrue();
+        snapshot.Orders.Should().BeEmpty();
+
+        connection.Dispose();
     }
 
     private static (IbkrBrokerService Broker, IbkrConnectionService Connection, CapturingLogger<IbkrBrokerService> Logger)

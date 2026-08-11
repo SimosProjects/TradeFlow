@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Vela is a .NET 10 event-driven automated trading platform executing against an IBKR paper account (DUQ048946, port 4002). It consumes trade alerts from Xtrades (REST + SignalR), evaluates them through a risk engine, sizes positions, and places orders via the TWS API. Commercial SaaS intent; currently in controlled paper trading.
+Vela is a .NET 10 event-driven automated trading platform executing against an IBKR paper account (DUQ048946, port 4002). It consumes trade alerts from Xtrades (REST + SignalR), evaluates them through a risk engine, sizes positions, and places orders via the TWS API. Commercial SaaS intent; currendtly in controlled paper trading.
 
-**Owner:** Chris (Simo) — Meridion Systems  
+**Owner:** Chris — Meridion Systems  
 **Business entity:** Meridion Systems
 
 ---
@@ -53,8 +53,15 @@ grep -E "INF|WRN|ERR" "./Vela.Worker/logs/vela-$(date +%Y%m%d).log"
 
 1. XML doc on public members only
 2. Inline `//` for non-trivial logic only — don't over-comment
-3. No alignment spaces anywhere (fields, named args, assignments)
-4. No em dashes in comments or docs
+3. Alignment spaces: match the surrounding file's existing convention, don't impose one.
+   Most of Vela.Worker (e.g. IbkrBrokerService.cs, BrokerExecutionService.cs) consistently
+   aligns named arguments and field initializers in multi-line constructor calls — follow
+   that where it's already the local convention. Don't introduce alignment into a file that
+   doesn't already have it.
+4. Em dashes: match the surrounding file's existing convention, don't impose one. They are
+   the dominant, established style in Vela.Worker (105 uses in IbkrBrokerService.cs, 70 in
+   BrokerExecutionService.cs alone, confirmed 2026-08-11) — use them there. Don't introduce
+   them into a file that doesn't already use them.
 5. Private helpers use `//` only, not XML doc
 6. No "Fix:"/"Previously…" comments
 7. Section dividers: `// -- Helpers --`
@@ -91,15 +98,39 @@ grep -E "INF|WRN|ERR" "./Vela.Worker/logs/vela-$(date +%Y%m%d).log"
 
 ---
 
-## Active Configuration (Fibonaccizer Isolation Experiment)
+## Active Configuration
 
-- `MinXScore = 100`, `ApprovedTraders = ["Fibonaccizer"]`
-- `AllowHigh = false`, `AllowLotto = false`
-- All slippage thresholds set to 0 (market orders for all entries)
-- `OptionsMaxBudget = $6,000`, `StockMaxBudget = $6,000`
-- `OptionsStandardTrailPct = 40%`
-- `AllowOverrideBlocks = true` (dashboard toggle persists block settings through regime checkpoints)
-- Regime-aware sizing: Bullish=1.0x, Choppy=0.5x, Bearish=0.25x
+Values below are the actual current `risk_config_overrides` DB row (source of truth) and
+`Vela.Worker/appsettings.json`, checked 2026-08-11. The Worker patches only
+`approvedTraders`, `restrictedTraders`, and `allowOptions` from appsettings into the DB row
+on every restart (`Program.cs`); every other risk field is dashboard-owned and can drift
+from appsettings.json over time with nobody editing it back. appsettings.json is the
+initial seed, not a live mirror — don't trust it alone for anything but those three fields.
+
+- `MinXScore = 80`, `ApprovedTraders = ["SLAM", "Hydra"]`
+- `RestrictedTraders`: `Tim` (0% allotment)
+- `AllowOptions = false` (display-only — Worker reads this from appsettings.json at startup
+  only; the DB seed does not make it dashboard-settable)
+- **Dead config:** `AllowHigh`/`AllowLotto` in `RiskEngineOptions` are declared, bound from
+  appsettings (`true`/`false` respectively), but nothing in the codebase reads them —
+  confirmed via full-solution search, 2026-08-11. The real high-risk/lotto gate is
+  regime-driven: `NoHighRiskRule`/`NoLottoRule` (`Program.cs`) are wired to
+  `MarketRegimeService.BlockHigh`/`BlockLotto`, controlled by `system_state`'s
+  `BlockHighOverride`/`BlockLottoOverride` and the current regime tier — entirely
+  independent of `AllowHigh`/`AllowLotto`. Flipping those appsettings values does nothing.
+  Leaving this note even if the dead fields are cleaned up later — the fact that they were
+  misleading documentation for this long is itself worth keeping a record of.
+- Options budgets (DB): initial $3,000 / average $1,000 / high $2,000 / high-average $1,000
+  / lotto $1,000 / lotto-average $0 / max $6,000. Trail: standard 40%, high 50%, lotto 50%.
+  Target multiple 2.0x.
+- Stock budgets (DB): initial $2,000 / average $1,000 / max $3,000. Trail: standard 5%,
+  high 10%, lotto 15%. Target multiple 1.5x.
+- `DailyLossLimit = -$10,000`, `ChopDailyLossLimit = -$10,000` (DB; appsettings.json still
+  says -$30,000 / -$20,000 — stale there, DB is authoritative)
+- Regime-aware sizing (appsettings.json — not in the DB override JSON, so this one *is*
+  appsettings-authoritative): Bullish 1.0x, Choppy 0.75x, Bearish 0.50x
+- `AllowOverrideBlocks = false` (`system_state`, not `RiskEngineOptions` — separate table.
+  Currently `Bullish` regime, not paused.)
 
 ---
 

@@ -266,7 +266,13 @@ public class IbkrBrokerService : IBrokerService
 
     public async Task<PositionsSnapshot> GetAllPositionsAsync(CancellationToken ct = default)
     {
-        if (!EnsureConnected()) return new PositionsSnapshot([], false);
+        // TimedOut: true here, not false — a connection failure is exactly the "cannot trust
+        // this data" case TimedOut exists to signal, and every caller (VerifyCloseExecutedAsync,
+        // Startup/PeriodicReconciliationService, Vela.Guardian, MarketSchedulerService) already
+        // treats TimedOut as "do not act on this." Returning TimedOut: false with an empty list
+        // previously made "not connected" indistinguishable from "connected and confirmed zero
+        // positions" — VerifyCloseExecutedAsync would read that as a genuinely closed position.
+        if (!EnsureConnected()) return new PositionsSnapshot([], true);
 
         // NOTE: IB API's reqPositions() takes no reqId, it is a single global un-tagged
         // subscription shared by every caller on this connection. TraceId below is a
@@ -316,7 +322,11 @@ public class IbkrBrokerService : IBrokerService
 
     public async Task<OrdersSnapshot> GetAllOpenOrdersAsync(CancellationToken ct = default)
     {
-        if (!EnsureConnected()) return new OrdersSnapshot([], false);
+        // TimedOut: true, not false — same reasoning as GetAllPositionsAsync's identical fix.
+        // A connection failure is not a confirmed "zero open orders" result, and callers that
+        // gate on TimedOut (StartupReconciliationService.ClassifyOpenOrdersAsync, Vela.Guardian's
+        // ConfirmOrderIsLiveAsync, MarketSchedulerService) must not be told this was confirmed.
+        if (!EnsureConnected()) return new OrdersSnapshot([], true);
 
         var tcs = _connection.Wrapper.RegisterAllOpenOrdersCallback();
 
@@ -1054,6 +1064,19 @@ public class IbkrBrokerService : IBrokerService
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(_options.TimeoutMs);
             var fill = await tcs.Task.WaitAsync(cts.Token);
+
+            // Same shared-TCS hazard as ClosePositionAsync (see its comment for the 2026-08-10
+            // TKO incident) — orderStatus resolves this TCS with a zero fill on Cancelled/
+            // Inactive, and this method must not treat that as a fill. The original stop is
+            // never touched by this method, so the position remains protected regardless of
+            // which branch below fires.
+            if (fill.Status is "Cancelled" or "Inactive")
+            {
+                _connection.Wrapper.UnregisterExecDetailsTcsCallback(closeOrderId);
+                return BuildRejectedCloseResult(
+                    trade.Symbol, trade.TradeType, closeOrderId, quantityToClose, fill, lastPartialFill);
+            }
+
             var fillPrice = fill.AvgFillPrice > 0 ? fill.AvgFillPrice : trade.EntryPrice;
             var multiplier = trade.TradeType == TradeType.Options ? 100m : 1m;
 
@@ -1233,6 +1256,23 @@ public class IbkrBrokerService : IBrokerService
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(_options.TimeoutMs);
             var fill = await tcs.Task.WaitAsync(cts.Token);
+
+            // orderStatus's Cancelled/Inactive branch (IbkrEWrapper.cs) resolves this same
+            // shared TCS with a zero fill so PlaceOrderAsync's own Cancelled path does not sit
+            // at the timeout — but this method shares that TCS and must not treat a
+            // rejected/inactive close order as a fill. The 2026-08-10 TKO incident: a market
+            // close order submitted seconds after the closing bell was rejected ("Exchange is
+            // closed") and reported Inactive, and this method recorded it as Filled at entry
+            // price for the full requested quantity — a fabricated breakeven close while the
+            // position sat open and unprotected (the stop was already cancelled above) for 5
+            // days until reconciliation caught it.
+            if (fill.Status is "Cancelled" or "Inactive")
+            {
+                _connection.Wrapper.UnregisterExecDetailsTcsCallback(closeOrderId);
+                return BuildRejectedCloseResult(
+                    trade.Symbol, trade.TradeType, closeOrderId, closeQty, fill, lastPartialFill);
+            }
+
             var fillPrice = fill.AvgFillPrice > 0 ? fill.AvgFillPrice : trade.EntryPrice;
             var multiplier = trade.TradeType == TradeType.Options ? 100m : 1m;
 
@@ -1884,6 +1924,60 @@ public class IbkrBrokerService : IBrokerService
     // PlaceOrderAsync and the OCA target leg in BuildOcaLimitOrder.
     private static decimal RoundToTick(decimal price, double minTick) =>
         (decimal)Math.Round(Math.Round((double)price / minTick) * minTick, 2);
+
+    // Builds the result for a close/partial-close order that resolved as Cancelled or Inactive
+    // instead of Filled — never treat this as a fill. Shared by ClosePositionAsync and
+    // PartialCloseAsync, both of which register their close order on the same TCS mechanism
+    // orderStatus() resolves for any Cancelled/Inactive status, filled or not. Isolated as its
+    // own method (no EnsureConnected/live-order dependency) so this exact translation — the gap
+    // behind the 2026-08-10 TKO incident, where an Inactive close order was reported as Filled
+    // at entry price for the full requested quantity — is directly testable.
+    private BrokerOrderResult BuildRejectedCloseResult(
+        string symbol, TradeType tradeType, int closeOrderId, int requestedQty,
+        OrderFill fill, OrderFill? lastPartialFill)
+    {
+        if (lastPartialFill is not null)
+        {
+            // A genuine partial fill occurred before the remainder was cancelled or went
+            // inactive — never report this as the full requested quantity (the 2026-07-17
+            // UBER incident).
+            var partialMultiplier = tradeType == TradeType.Options ? 100m : 1m;
+            var confirmedQty = lastPartialFill.FilledQuantity;
+
+            _logger.LogError(
+                "IBKR close for {Symbol} confirmed only {SoldQty} of {Requested} filled @ " +
+                "${Price:F2} before the order went {Status} — remainder may still be open at IBKR.",
+                symbol, confirmedQty, requestedQty, lastPartialFill.AvgFillPrice, fill.Status);
+
+            return new BrokerOrderResult(
+                OrderId:       closeOrderId.ToString(),
+                StopOrderId:   null,
+                TargetOrderId: null,
+                FillPrice:     lastPartialFill.AvgFillPrice,
+                FillQuantity:  confirmedQty,
+                FillAmount:    lastPartialFill.AvgFillPrice * confirmedQty * partialMultiplier,
+                Status:        OrderStatus.PartialFill,
+                FilledAt:      DateTimeOffset.UtcNow);
+        }
+
+        var reason = _connection.Wrapper.TakeRejectionReason(closeOrderId) ?? fill.Status;
+
+        _logger.LogError(
+            "IBKR close for {Symbol} was not filled — OrderId {OrderId} Status: {Status} " +
+            "Reason: {Reason}. Not recording a close.",
+            symbol, closeOrderId, fill.Status, reason);
+
+        return new BrokerOrderResult(
+            OrderId:         closeOrderId.ToString(),
+            StopOrderId:     null,
+            TargetOrderId:   null,
+            FillPrice:       0m,
+            FillQuantity:    0,
+            FillAmount:      0m,
+            Status:          fill.Status == "Cancelled" ? OrderStatus.Cancelled : OrderStatus.Rejected,
+            FilledAt:        DateTimeOffset.UtcNow,
+            RejectionReason: reason);
+    }
 
     private static Contract BuildContract(TradeOrder order) =>
         BuildContract(order.Symbol, order.TradeType, order.Direction, order.Strike, order.Expiration);
