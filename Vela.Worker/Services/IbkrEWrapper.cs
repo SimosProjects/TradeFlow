@@ -9,6 +9,9 @@ namespace Vela.Worker.Services;
 /// </summary>
 public class IbkrEWrapper : EWrapper
 {
+    private static readonly TimeZoneInfo EasternTime =
+        TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+
     private readonly ILogger<IbkrEWrapper> _logger;
     private readonly Dictionary<int, TaskCompletionSource<OrderFill>> _orderCallbacks = new();
     private readonly Dictionary<int, TaskCompletionSource<string>> _accountCallbacks = new();
@@ -21,6 +24,10 @@ public class IbkrEWrapper : EWrapper
     // partial progress (e.g. to start a bounded completion timer) without treating it as done.
     private readonly Dictionary<int, (Action<decimal> OnFilled, int RequestedQuantity, Action<OrderFill>? OnPartial)> _execDetailsCallbacks = new();
     private readonly Dictionary<int, (TaskCompletionSource<OrderFill> Tcs, int RequestedQuantity, Action<OrderFill>? OnPartial)> _execDetailsTcsCallbacks = new();
+    // Execution history callbacks keyed by reqId (not orderId), accumulates every execution
+    // reqExecutions returns until execDetailsEnd fires. Used by GetRecentExecutionAsync to find
+    // a position's actual fill even when it wasn't placed or tracked by this session.
+    private readonly Dictionary<int, (List<IbkrExecution> Items, TaskCompletionSource<List<IbkrExecution>> Tcs)> _execHistoryCallbacks = new();
 
     // Market data streaming callbacks keyed by reqId, resolves with midpoint or LAST price
     private readonly Dictionary<int, TaskCompletionSource<decimal>> _marketDataCallbacks = new();
@@ -28,6 +35,10 @@ public class IbkrEWrapper : EWrapper
     private readonly Dictionary<int, decimal> _marketDataAsks = new();
     // Historical data callbacks keyed by reqId, accumulates bars until historicalDataEnd fires
     private readonly Dictionary<int, (List<HistoricalBar> Bars, TaskCompletionSource<List<HistoricalBar>> Tcs)> _historicalDataCallbacks = new();
+    // Intraday bar callbacks keyed by reqId, same historicalData/historicalDataEnd stream as
+    // _historicalDataCallbacks but parses the full timestamp instead of just the date, and is
+    // registered under its own reqId so the two never collide.
+    private readonly Dictionary<int, (List<IntradayBar> Bars, TaskCompletionSource<List<IntradayBar>> Tcs)> _intradayDataCallbacks = new();
 
     // Batch position snapshot, accumulates all positions until positionEnd fires
     private readonly List<IbkrPosition> _allPositionsBuffer = new();
@@ -139,6 +150,20 @@ public class IbkrEWrapper : EWrapper
                         execution.OrderId, execution.CumQty, tcsReg.RequestedQuantity);
                     tcsReg.OnPartial?.Invoke(fill);
                 }
+            }
+
+            // Batch execution-history accumulation, keyed by reqId rather than orderId since
+            // reqExecutions can return fills this session never placed or registered a callback
+            // for (GetRecentExecutionAsync).
+            if (_execHistoryCallbacks.TryGetValue(reqId, out var histEntry))
+            {
+                histEntry.Items.Add(new IbkrExecution(
+                    Symbol:      contract.Symbol,
+                    SecType:     contract.SecType,
+                    LocalSymbol: contract.LocalSymbol,
+                    Side:        execution.Side,
+                    Price:       (decimal)execution.AvgPrice,
+                    Time:        ParseIbkrDateTime(execution.Time)));
             }
         }
     }
@@ -364,6 +389,30 @@ public class IbkrEWrapper : EWrapper
     }
 
     /// <summary>
+    /// Registers a callback that resolves when Gateway finishes delivering intraday bars.
+    /// Shares the same historicalData/historicalDataEnd callback stream as
+    /// RegisterHistoricalDataCallback, distinguished only by reqId.
+    /// </summary>
+    public TaskCompletionSource<List<IntradayBar>> RegisterIntradayDataCallback(int reqId)
+    {
+        var tcs = new TaskCompletionSource<List<IntradayBar>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_lock)
+        {
+            _intradayDataCallbacks[reqId] = (new List<IntradayBar>(), tcs);
+        }
+        return tcs;
+    }
+
+    /// <summary>
+    /// Removes an intraday data callback on timeout before all bars arrive.
+    /// </summary>
+    public void UnregisterIntradayDataCallback(int reqId)
+    {
+        lock (_lock) { _intradayDataCallbacks.Remove(reqId); }
+    }
+
+    /// <summary>
     /// Registers a callback that fires only once IBKR confirms the order has reached
     /// requestedQuantity cumulative filled (i.e. genuinely done, not just partially filled).
     /// onPartialFill is an optional side-channel invoked on every callback that falls short of
@@ -409,6 +458,26 @@ public class IbkrEWrapper : EWrapper
     public void UnregisterExecDetailsTcsCallback(int orderId)
     {
         lock (_lock) { _execDetailsTcsCallbacks.Remove(orderId); }
+    }
+
+    /// <summary>
+    /// Registers a batch execution-history request (reqExecutions). All matching executions
+    /// accumulate until execDetailsEnd fires. Used by GetRecentExecutionAsync to find a
+    /// position's actual fill price after a reconciliation gap.
+    /// </summary>
+    public TaskCompletionSource<List<IbkrExecution>> RegisterExecutionHistoryCallback(int reqId)
+    {
+        var tcs = new TaskCompletionSource<List<IbkrExecution>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_lock) { _execHistoryCallbacks[reqId] = (new List<IbkrExecution>(), tcs); }
+        return tcs;
+    }
+
+    /// <summary>
+    /// Removes an execution-history callback on timeout before execDetailsEnd fires.
+    /// </summary>
+    public void UnregisterExecutionHistoryCallback(int reqId)
+    {
+        lock (_lock) { _execHistoryCallbacks.Remove(reqId); }
     }
 
     /// <summary>
@@ -786,20 +855,39 @@ public class IbkrEWrapper : EWrapper
             System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.None, out var d) ? d : DateOnly.MinValue;
 
-        if (date == DateOnly.MinValue) return;
-
-        var hBar = new HistoricalBar(
-            Date:   date,
-            Open:   (decimal)bar.Open,
-            High:   (decimal)bar.High,
-            Low:    (decimal)bar.Low,
-            Close:  (decimal)bar.Close,
-            Volume: (long)bar.Volume);
-
-        lock (_lock)
+        if (date != DateOnly.MinValue)
         {
-            if (_historicalDataCallbacks.TryGetValue(reqId, out var entry))
-                entry.Bars.Add(hBar);
+            var hBar = new HistoricalBar(
+                Date:   date,
+                Open:   (decimal)bar.Open,
+                High:   (decimal)bar.High,
+                Low:    (decimal)bar.Low,
+                Close:  (decimal)bar.Close,
+                Volume: (long)bar.Volume);
+
+            lock (_lock)
+            {
+                if (_historicalDataCallbacks.TryGetValue(reqId, out var entry))
+                    entry.Bars.Add(hBar);
+            }
+        }
+
+        var time = ParseIbkrDateTime(bar.Time);
+        if (time is not null)
+        {
+            var iBar = new IntradayBar(
+                Time:   time.Value,
+                Open:   (decimal)bar.Open,
+                High:   (decimal)bar.High,
+                Low:    (decimal)bar.Low,
+                Close:  (decimal)bar.Close,
+                Volume: (long)bar.Volume);
+
+            lock (_lock)
+            {
+                if (_intradayDataCallbacks.TryGetValue(reqId, out var entry))
+                    entry.Bars.Add(iBar);
+            }
         }
     }
 
@@ -813,10 +901,41 @@ public class IbkrEWrapper : EWrapper
                 entry.Tcs.TrySetResult(entry.Bars);
                 _historicalDataCallbacks.Remove(reqId);
             }
+
+            if (_intradayDataCallbacks.TryGetValue(reqId, out var intradayEntry))
+            {
+                intradayEntry.Tcs.TrySetResult(intradayEntry.Bars);
+                _intradayDataCallbacks.Remove(reqId);
+            }
         }
     }
 
     // -- Helpers --
+
+    // Execution.Time and intraday Bar.Time both arrive as "yyyyMMdd  HH:mm:ss" under
+    // formatDate=1, some API versions append a trailing timezone token (e.g. "US/Eastern")
+    // separated by whitespace, which the split below simply ignores. IBKR reports both in
+    // the account's local time, Eastern for this account. Returns null on any unrecognized
+    // format rather than throwing, callers treat a null Time as a miss for that record.
+    private static DateTimeOffset? ParseIbkrDateTime(string raw)
+    {
+        var parts = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) return null;
+
+        if (!DateOnly.TryParseExact(parts[0], "yyyyMMdd",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var date))
+            return null;
+
+        if (!TimeOnly.TryParseExact(parts[1], "HH:mm:ss",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var time))
+            return null;
+
+        var localUnspecified = new DateTime(date, time, DateTimeKind.Unspecified);
+        var utc = TimeZoneInfo.ConvertTimeToUtc(localUnspecified, EasternTime);
+        return new DateTimeOffset(utc, TimeSpan.Zero);
+    }
 
     // Parses IBKR [202] cancellation messages and stores a structured rejection reason so
     // PlaceOrderAsync can distinguish a cancelled order from a genuine pending fill.
@@ -907,7 +1026,17 @@ public class IbkrEWrapper : EWrapper
     public void accountDownloadEnd(string account) { }
     public void contractDetails(int reqId, ContractDetails contractDetails) { }
     public void contractDetailsEnd(int reqId) { }
-    public void execDetailsEnd(int reqId) { }
+    public void execDetailsEnd(int reqId)
+    {
+        lock (_lock)
+        {
+            if (_execHistoryCallbacks.TryGetValue(reqId, out var entry))
+            {
+                entry.Tcs.TrySetResult(entry.Items);
+                _execHistoryCallbacks.Remove(reqId);
+            }
+        }
+    }
     public void commissionReport(CommissionReport commissionReport) { }
     public void fundamentalData(int reqId, string data) { }
     public void historicalDataUpdate(int reqId, Bar bar) { }

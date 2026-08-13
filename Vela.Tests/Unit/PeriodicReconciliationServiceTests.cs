@@ -177,6 +177,35 @@ public class PeriodicReconciliationServiceTests : IDisposable
         guard.GetOpenTrades().Should().ContainSingle(t => t.OrderId == "9905");
     }
 
+    // -- LastVerifiedOpenAt anchor, written on every live-confirmed cycle so a later ghost close
+    //    has a bounded window to search intraday bars from, instead of guessing back to OpenedAt --
+
+    [Fact]
+    public async Task CheckManagedPositions_WhenIbkrMatchHasPositiveQty_RecordsLastVerifiedOpenAnchor()
+    {
+        var (svc, guard, repo, _) = BuildService();
+        guard.LoadFromDatabase([StockDbPosition("TSLA", "9905")]);
+
+        await svc.CheckManagedPositionsAsync([StockPos("TSLA", 5)], CancellationToken.None);
+
+        repo.Verify(r => r.MarkVerifiedOpenAsync(
+            "9905", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CheckManagedPositions_ManualPosition_WhenIbkrMatchHasPositiveQty_RecordsLastVerifiedOpenAnchor()
+    {
+        var (svc, _, repo, _) = BuildService();
+        var manual = ManualStockDbPosition("SPX", "MANUAL-SPX-1784295727968");
+        repo.Setup(r => r.GetAllAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync([manual]);
+
+        await svc.CheckManagedPositionsAsync([StockPos("SPX", 1)], CancellationToken.None);
+
+        repo.Verify(r => r.MarkVerifiedOpenAsync(
+            "MANUAL-SPX-1784295727968", It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     // -- Manual (IsManual) positions get the same liveness coverage (2026-07-17/18 MANUAL-SPX incident) --
 
     [Fact]

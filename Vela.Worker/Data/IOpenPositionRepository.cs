@@ -50,4 +50,10 @@ public interface IOpenPositionRepository
 
     /// <summary>Gets all positions currently flagged with a deferred close awaiting retry.</summary>
     Task<List<OpenPosition>> GetPendingCloseAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Records that a periodic reconciliation cycle confirmed this position still exists at the
+    /// broker. A no-op if the position no longer has a row (e.g. closed concurrently).
+    /// </summary>
+    Task MarkVerifiedOpenAsync(string orderId, DateTimeOffset verifiedAt, CancellationToken ct = default);
 }

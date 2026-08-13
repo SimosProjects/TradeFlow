@@ -280,4 +280,37 @@ public class NullBrokerService : IBrokerService
         _logger.LogDebug("[NullBroker] GetAccountSnapshot -> zeroed snapshot (simulation)");
         return Task.FromResult(new AccountSnapshot(0, 0, 0, 0, false));
     }
+
+    /// <summary>
+    /// Returns null, no Gateway available in simulation.
+    /// </summary>
+    public Task<BrokerExecution?> GetRecentExecutionAsync(
+        string symbol,
+        TradeType tradeType,
+        string? optionsContract = null,
+        string? direction = null,
+        decimal? strike = null,
+        string? expiration = null,
+        CancellationToken ct = default)
+    {
+        _logger.LogDebug("[NullBroker] GetRecentExecution {Symbol} -> null (simulation)", symbol);
+        return Task.FromResult<BrokerExecution?>(null);
+    }
+
+    /// <summary>
+    /// Returns an empty list, no Gateway available in simulation.
+    /// </summary>
+    public Task<List<IntradayBar>> GetIntradayBarsAsync(
+        string symbol,
+        TradeType tradeType,
+        string? direction,
+        decimal? strike,
+        string? expiration,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken ct = default)
+    {
+        _logger.LogDebug("[NullBroker] GetIntradayBars {Symbol} -> empty (simulation)", symbol);
+        return Task.FromResult(new List<IntradayBar>());
+    }
 }

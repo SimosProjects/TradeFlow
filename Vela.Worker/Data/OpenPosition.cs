@@ -38,4 +38,13 @@ public class OpenPosition
 
     /// <summary>Timestamp of the first deferred close attempt, preserved across retries.</summary>
     public DateTimeOffset? PendingCloseSince { get; set; }
+
+    /// <summary>
+    /// Timestamp of the last periodic reconciliation cycle that confirmed this position still
+    /// existed at the broker. Null until the first successful liveness check. Gives
+    /// GhostPositionCloseOutService a bounded anchor, "confirmed open as of X" — to search
+    /// intraday bars from when the position later turns up gone, instead of guessing across the
+    /// unbounded range back to OpenedAt.
+    /// </summary>
+    public DateTimeOffset? LastVerifiedOpenAt { get; set; }
 }

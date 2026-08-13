@@ -194,4 +194,21 @@ public class OpenPositionRepository : IOpenPositionRepository
             .Where(p => p.PendingCloseOutcome != null)
             .ToListAsync(ct);
     }
+
+    /// <inheritdoc/>
+    public async Task MarkVerifiedOpenAsync(string orderId, DateTimeOffset verifiedAt, CancellationToken ct = default)
+    {
+        try
+        {
+            await _db.OpenPositions
+                .Where(p => p.OrderId == orderId)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.LastVerifiedOpenAt, verifiedAt), ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Failed to mark verified-open timestamp for open position OrderId: {OrderId}", orderId);
+            throw;
+        }
+    }
 }
