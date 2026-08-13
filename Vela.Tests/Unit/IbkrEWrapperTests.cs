@@ -200,4 +200,77 @@ public class IbkrEWrapperTests
 
         Assert.Null(ex);
     }
+
+    // -- Execution history (reqExecutions) — GetRecentExecutionAsync's tier 1 --
+
+    // GetRecentExecutionAsync queries account-level execution history by reqId, not orderId, a
+    // ghost position's fill may not belong to any order this session is tracking. Confirms
+    // execDetails accumulates into that separate reqId-keyed list and execDetailsEnd resolves
+    // it, independent of the existing orderId-keyed order-fill-tracking dictionaries.
+    [Fact]
+    public async Task ExecutionHistory_AccumulatesUntilEnd_ResolvesWithAllMatchingExecutions()
+    {
+        var wrapper = new IbkrEWrapper(NullLogger<IbkrEWrapper>.Instance);
+        var tcs = wrapper.RegisterExecutionHistoryCallback(reqId: 500);
+
+        var contract = new Contract { Symbol = "TSLA", SecType = "STK" };
+
+        wrapper.execDetails(500, contract,
+            new Execution { OrderId = 1, Side = "SLD", AvgPrice = 224.10, CumQty = 10, Time = "20260812  09:41:15" });
+        wrapper.execDetails(500, contract,
+            new Execution { OrderId = 2, Side = "SLD", AvgPrice = 225.00, CumQty = 10, Time = "20260812  09:52:03" });
+
+        Assert.False(tcs.Task.IsCompleted);
+
+        wrapper.execDetailsEnd(500);
+
+        Assert.True(tcs.Task.IsCompleted);
+        var executions = await tcs.Task;
+        Assert.Equal(2, executions.Count);
+        Assert.Contains(executions, e => e.Price == 225.00m);
+    }
+
+    // A malformed or unrecognized Time format must not drop the record silently or throw, it
+    // still accumulates with a null Time so GetRecentExecutionAsync's own filtering excludes it
+    // from ordering rather than the wrapper losing data.
+    [Fact]
+    public async Task ExecutionHistory_UnparsableTime_StillAccumulatesWithNullTime()
+    {
+        var wrapper = new IbkrEWrapper(NullLogger<IbkrEWrapper>.Instance);
+        var tcs = wrapper.RegisterExecutionHistoryCallback(reqId: 501);
+
+        var contract = new Contract { Symbol = "TSLA", SecType = "STK" };
+        wrapper.execDetails(501, contract,
+            new Execution { OrderId = 3, Side = "SLD", AvgPrice = 226.00, CumQty = 10, Time = "garbage" });
+
+        wrapper.execDetailsEnd(501);
+
+        var executions = await tcs.Task;
+        var only = Assert.Single(executions);
+        Assert.Null(only.Time);
+    }
+
+    // -- Intraday bars — GetIntradayBarsAsync's tier 2 --
+
+    // GetIntradayBarsAsync shares the same historicalData/historicalDataEnd callback stream as
+    // GetHistoricalBarsAsync (daily) but resolves via a separate reqId-keyed registration that
+    // parses the full timestamp instead of discarding time-of-day. Aug 12 2026 falls in Eastern
+    // Daylight Time (UTC-4), so 09:41 ET is 13:41 UTC.
+    [Fact]
+    public async Task IntradayData_AccumulatesUntilEnd_ParsesFullTimestamp()
+    {
+        var wrapper = new IbkrEWrapper(NullLogger<IbkrEWrapper>.Instance);
+        var tcs = wrapper.RegisterIntradayDataCallback(reqId: 700);
+
+        wrapper.historicalData(700, new Bar("20260812  09:41:00", 221.0, 223.0, 220.5, 222.25, 1000, 1, 222.0));
+
+        Assert.False(tcs.Task.IsCompleted);
+
+        wrapper.historicalDataEnd(700, "", "");
+
+        var bars = await tcs.Task;
+        var bar = Assert.Single(bars);
+        Assert.Equal(222.25m, bar.Close);
+        Assert.Equal(new DateTimeOffset(2026, 8, 12, 13, 41, 0, TimeSpan.Zero), bar.Time);
+    }
 }

@@ -36,21 +36,22 @@ public class GhostPositionCloseOutServiceTests : IDisposable
 
     // -- Helpers --
 
-    private static OpenPosition StockPosition(string orderId = "9001") =>
+    private static OpenPosition StockPosition(string orderId = "9001", DateTimeOffset? lastVerifiedOpenAt = null) =>
         new()
         {
-            OrderId     = orderId,
-            AlertId     = "alert-1",
-            UserName    = "Fibonaccizer",
-            Symbol      = "TSLA",
-            TradeType   = "Stock",
-            Quantity    = 10,
-            EntryPrice  = 200m,
-            EntryAmount = 2000m,
-            StopPrice   = 180m,
-            TargetPrice = 240m,
-            OpenedAt    = DateTimeOffset.UtcNow,
-            IsManual    = false,
+            OrderId            = orderId,
+            AlertId            = "alert-1",
+            UserName           = "Fibonaccizer",
+            Symbol             = "TSLA",
+            TradeType          = "Stock",
+            Quantity           = 10,
+            EntryPrice         = 200m,
+            EntryAmount        = 2000m,
+            StopPrice          = 180m,
+            TargetPrice        = 240m,
+            OpenedAt           = DateTimeOffset.UtcNow,
+            IsManual           = false,
+            LastVerifiedOpenAt = lastVerifiedOpenAt,
         };
 
     private static TradeMetric Metric(string orderId = "9001") =>
@@ -148,6 +149,155 @@ public class GhostPositionCloseOutServiceTests : IDisposable
         var stocksCsv = await File.ReadAllTextAsync(Path.Combine(_tempDir, "stocks_trades.csv"));
         stocksCsv.Should().Contain("TSLA");
         stocksCsv.Should().Contain("Closed");
+    }
+
+    // -- Exit price waterfall (tier 1: reqExecutions, tier 2: anchored intraday bars, tier 3: live quote) --
+
+    [Fact]
+    public async Task TryGetExitPrice_WhenExecutionHistoryFindsFill_UsesExactExecutionPriceAndSkipsLowerTiers()
+    {
+        var broker = new Mock<IBrokerService>();
+        broker.Setup(b => b.GetRecentExecutionAsync(
+                "TSLA", TradeType.Stock, null, null, null, null, It.IsAny<CancellationToken>()))
+              .ReturnsAsync(new BrokerExecution(225m, DateTimeOffset.UtcNow.AddMinutes(-10)));
+
+        var metrics = new Mock<ITradeMetricsRepository>();
+        metrics.Setup(m => m.GetByOrderIdAsync("9001", It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Metric());
+
+        decimal? capturedExitPrice = null;
+        metrics.Setup(m => m.CloseAsync(
+                "9001", It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(),
+                "ClosedExternally", It.IsAny<DateTimeOffset>(), null, null, It.IsAny<CancellationToken>()))
+               .Callback<string, decimal?, decimal?, decimal?, decimal?, string, DateTimeOffset, int?, decimal?, CancellationToken>(
+                   (_, exitPrice, _, _, _, _, _, _, _, _) => capturedExitPrice = exitPrice)
+               .Returns(Task.CompletedTask);
+
+        var svc = new GhostPositionCloseOutService(
+            broker.Object, metrics.Object, _csv, NullLogger<GhostPositionCloseOutService>.Instance);
+
+        await svc.CloseOutAsync(StockPosition());
+
+        capturedExitPrice.Should().Be(225m);
+        broker.Verify(b => b.GetIntradayBarsAsync(
+            It.IsAny<string>(), It.IsAny<TradeType>(), It.IsAny<string?>(), It.IsAny<decimal?>(),
+            It.IsAny<string?>(), It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+        broker.Verify(b => b.GetCurrentMarketPriceAsync(
+            It.IsAny<string>(), It.IsAny<TradeType>(), It.IsAny<string?>(), It.IsAny<decimal?>(),
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TryGetExitPrice_WhenExecutionMissesButAnchorExists_UsesAnchoredIntradayBarAndSkipsLiveQuote()
+    {
+        var anchor = DateTimeOffset.UtcNow.AddMinutes(-45);
+
+        var broker = new Mock<IBrokerService>();
+        broker.Setup(b => b.GetRecentExecutionAsync(
+                "TSLA", TradeType.Stock, null, null, null, null, It.IsAny<CancellationToken>()))
+              .ReturnsAsync((BrokerExecution?)null);
+        broker.Setup(b => b.GetIntradayBarsAsync(
+                "TSLA", TradeType.Stock, null, null, null, anchor, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+              .ReturnsAsync(new List<IntradayBar>
+              {
+                  new(anchor.AddMinutes(10), 221m, 223m, 220m, 222m, 1000),
+                  new(anchor.AddMinutes(20), 222m, 224m, 221m, 223.50m, 1200), // most recent — expected
+              });
+
+        var metrics = new Mock<ITradeMetricsRepository>();
+        metrics.Setup(m => m.GetByOrderIdAsync("9001", It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Metric());
+
+        decimal? capturedExitPrice = null;
+        metrics.Setup(m => m.CloseAsync(
+                "9001", It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(),
+                "ClosedExternally", It.IsAny<DateTimeOffset>(), null, null, It.IsAny<CancellationToken>()))
+               .Callback<string, decimal?, decimal?, decimal?, decimal?, string, DateTimeOffset, int?, decimal?, CancellationToken>(
+                   (_, exitPrice, _, _, _, _, _, _, _, _) => capturedExitPrice = exitPrice)
+               .Returns(Task.CompletedTask);
+
+        var svc = new GhostPositionCloseOutService(
+            broker.Object, metrics.Object, _csv, NullLogger<GhostPositionCloseOutService>.Instance);
+
+        await svc.CloseOutAsync(StockPosition(lastVerifiedOpenAt: anchor));
+
+        capturedExitPrice.Should().Be(223.50m);
+        broker.Verify(b => b.GetCurrentMarketPriceAsync(
+            It.IsAny<string>(), It.IsAny<TradeType>(), It.IsAny<string?>(), It.IsAny<decimal?>(),
+            It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task TryGetExitPrice_WhenExecutionAndBarsBothMiss_FallsBackToLiveQuote()
+    {
+        var anchor = DateTimeOffset.UtcNow.AddMinutes(-45);
+
+        var broker = new Mock<IBrokerService>();
+        broker.Setup(b => b.GetRecentExecutionAsync(
+                "TSLA", TradeType.Stock, null, null, null, null, It.IsAny<CancellationToken>()))
+              .ReturnsAsync((BrokerExecution?)null);
+        broker.Setup(b => b.GetIntradayBarsAsync(
+                "TSLA", TradeType.Stock, null, null, null, anchor, It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+              .ReturnsAsync(new List<IntradayBar>());
+        broker.Setup(b => b.GetCurrentMarketPriceAsync(
+                "TSLA", TradeType.Stock, null, null, null, It.IsAny<CancellationToken>()))
+              .ReturnsAsync(219m);
+
+        var metrics = new Mock<ITradeMetricsRepository>();
+        metrics.Setup(m => m.GetByOrderIdAsync("9001", It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Metric());
+
+        decimal? capturedExitPrice = null;
+        metrics.Setup(m => m.CloseAsync(
+                "9001", It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(),
+                "ClosedExternally", It.IsAny<DateTimeOffset>(), null, null, It.IsAny<CancellationToken>()))
+               .Callback<string, decimal?, decimal?, decimal?, decimal?, string, DateTimeOffset, int?, decimal?, CancellationToken>(
+                   (_, exitPrice, _, _, _, _, _, _, _, _) => capturedExitPrice = exitPrice)
+               .Returns(Task.CompletedTask);
+
+        var svc = new GhostPositionCloseOutService(
+            broker.Object, metrics.Object, _csv, NullLogger<GhostPositionCloseOutService>.Instance);
+
+        await svc.CloseOutAsync(StockPosition(lastVerifiedOpenAt: anchor));
+
+        capturedExitPrice.Should().Be(219m);
+    }
+
+    [Fact]
+    public async Task TryGetExitPrice_WhenNoAnchorExists_SkipsIntradayBarsAndGoesStraightToLiveQuote()
+    {
+        var broker = new Mock<IBrokerService>();
+        broker.Setup(b => b.GetRecentExecutionAsync(
+                "TSLA", TradeType.Stock, null, null, null, null, It.IsAny<CancellationToken>()))
+              .ReturnsAsync((BrokerExecution?)null);
+        broker.Setup(b => b.GetCurrentMarketPriceAsync(
+                "TSLA", TradeType.Stock, null, null, null, It.IsAny<CancellationToken>()))
+              .ReturnsAsync(218m);
+
+        var metrics = new Mock<ITradeMetricsRepository>();
+        metrics.Setup(m => m.GetByOrderIdAsync("9001", It.IsAny<CancellationToken>()))
+               .ReturnsAsync(Metric());
+
+        decimal? capturedExitPrice = null;
+        metrics.Setup(m => m.CloseAsync(
+                "9001", It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(), It.IsAny<decimal?>(),
+                "ClosedExternally", It.IsAny<DateTimeOffset>(), null, null, It.IsAny<CancellationToken>()))
+               .Callback<string, decimal?, decimal?, decimal?, decimal?, string, DateTimeOffset, int?, decimal?, CancellationToken>(
+                   (_, exitPrice, _, _, _, _, _, _, _, _) => capturedExitPrice = exitPrice)
+               .Returns(Task.CompletedTask);
+
+        var svc = new GhostPositionCloseOutService(
+            broker.Object, metrics.Object, _csv, NullLogger<GhostPositionCloseOutService>.Instance);
+
+        // StockPosition() defaults LastVerifiedOpenAt to null — never persisted an anchor.
+        await svc.CloseOutAsync(StockPosition());
+
+        capturedExitPrice.Should().Be(218m);
+        broker.Verify(b => b.GetIntradayBarsAsync(
+            It.IsAny<string>(), It.IsAny<TradeType>(), It.IsAny<string?>(), It.IsAny<decimal?>(),
+            It.IsAny<string?>(), It.IsAny<DateTimeOffset>(), It.IsAny<DateTimeOffset>(),
+            It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

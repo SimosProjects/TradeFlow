@@ -174,8 +174,18 @@ public class PeriodicReconciliationService : BackgroundService
     {
         if (isLive)
         {
-            // Position confirmed — clear any previous miss streak
+            // Position confirmed — clear any previous miss streak and record this as the last
+            // point in time the position was known to still exist, giving
+            // GhostPositionCloseOutService a bounded anchor to search intraday bars from if this
+            // position later turns up gone.
             _missedChecks.Remove(orderId);
+
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var repo = scope.ServiceProvider.GetRequiredService<IOpenPositionRepository>();
+                await repo.MarkVerifiedOpenAsync(orderId, DateTimeOffset.UtcNow, ct);
+            }
+
             return;
         }
 
@@ -362,26 +372,27 @@ public class PeriodicReconciliationService : BackgroundService
 
         return new OpenPosition
         {
-            OrderId         = $"MANUAL-{ibkrPos.Symbol.Replace(" ", "")}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
-            StopOrderId     = matchingStop?.OrderId.ToString(),
-            TargetOrderId   = null,
-            AlertId         = "MANUAL",
-            UserName        = "MANUAL",
-            Symbol          = ibkrPos.Symbol,
-            TradeType       = isOptions ? "Options" : "Stock",
-            OptionsContract = isOptions ? ibkrPos.LocalSymbol?.Replace(" ", "") : null,
-            Direction       = null,
-            Strike          = null,
-            Expiration      = null,
-            Quantity        = ibkrPos.Quantity,
-            EntryPrice      = entryPrice,
-            EntryAmount     = entryAmount,
-            StopPrice       = matchingStop is { AuxPrice: not null } ? (decimal)matchingStop.AuxPrice.Value : 0m,
-            TargetPrice     = 0m,
-            OpenedAt        = DateTimeOffset.UtcNow,
-            IsAverage       = false,
-            HasAveraged     = false,
-            IsManual        = true,
+            OrderId            = $"MANUAL-{ibkrPos.Symbol.Replace(" ", "")}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+            StopOrderId        = matchingStop?.OrderId.ToString(),
+            TargetOrderId      = null,
+            AlertId            = "MANUAL",
+            UserName           = "MANUAL",
+            Symbol             = ibkrPos.Symbol,
+            TradeType          = isOptions ? "Options" : "Stock",
+            OptionsContract    = isOptions ? ibkrPos.LocalSymbol?.Replace(" ", "") : null,
+            Direction          = null,
+            Strike             = null,
+            Expiration         = null,
+            Quantity           = ibkrPos.Quantity,
+            EntryPrice         = entryPrice,
+            EntryAmount        = entryAmount,
+            StopPrice          = matchingStop is { AuxPrice: not null } ? (decimal)matchingStop.AuxPrice.Value : 0m,
+            TargetPrice        = 0m,
+            OpenedAt           = DateTimeOffset.UtcNow,
+            IsAverage          = false,
+            HasAveraged        = false,
+            IsManual           = true,
+            LastVerifiedOpenAt = DateTimeOffset.UtcNow,
         };
     }
 

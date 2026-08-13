@@ -194,6 +194,41 @@ public interface IBrokerService
     /// TimedOut=true means Gateway did not respond within the timeout window.
     /// </summary>
     Task<AccountSnapshot> GetAccountSnapshotAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Queries IBKR's account-level execution history (reqExecutions) for the most recent
+    /// closing (SLD) fill on the given contract. Unlike order-fill tracking elsewhere in this
+    /// interface, this is not scoped to orders this session placed, reqExecutions returns
+    /// account executions regardless of which session or mechanism (API, native TWS stop,
+    /// manual close) produced the fill. IBKR only retains this for the current trading day
+    /// since midnight, and IB Gateway cannot extend that window, so a gap crossing midnight
+    /// finds nothing here. Used by GhostPositionCloseOutService as the first tier of its exit
+    /// price waterfall. Returns null if no matching execution is found or the request fails.
+    /// </summary>
+    Task<BrokerExecution?> GetRecentExecutionAsync(
+        string symbol,
+        TradeType tradeType,
+        string? optionsContract = null,
+        string? direction = null,
+        decimal? strike = null,
+        string? expiration = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Fetches 1 minute intraday bars for a symbol between two bounds. Used by
+    /// GhostPositionCloseOutService to approximate an exit price when no execution record is
+    /// found, the second tier of its exit price waterfall. Returns an empty list if the broker
+    /// is unavailable, the request times out, or IBKR has no intraday data for the window.
+    /// </summary>
+    Task<List<IntradayBar>> GetIntradayBarsAsync(
+        string symbol,
+        TradeType tradeType,
+        string? direction,
+        decimal? strike,
+        string? expiration,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken ct = default);
 }
 
 /// <summary>
@@ -248,3 +283,20 @@ public record AccountSnapshot(
     decimal BuyingPower,
     decimal TodayPnL,
     bool TimedOut);
+
+/// <summary>
+/// The most recent matching closing fill found via GetRecentExecutionAsync.
+/// </summary>
+public record BrokerExecution(decimal Price, DateTimeOffset Time);
+
+/// <summary>
+/// A single execution returned by IBKR's reqExecutions, as accumulated by IbkrEWrapper.
+/// Time is null if IBKR returned an unrecognized time format for that record.
+/// </summary>
+public record IbkrExecution(
+    string Symbol,
+    string SecType,
+    string? LocalSymbol,
+    string Side,
+    decimal Price,
+    DateTimeOffset? Time);

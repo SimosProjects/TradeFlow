@@ -1473,6 +1473,126 @@ public class IbkrBrokerService : IBrokerService
     }
 
     /// <summary>
+    /// Queries reqExecutions for the most recent SLD (closing) fill on the given contract,
+    /// account-level history rather than a callback tied to an order this session placed.
+    /// Vela only manages long positions, so a close is always a sale. Matches by LocalSymbol
+    /// when optionsContract is supplied, otherwise by Symbol/SecType alone.
+    /// </summary>
+    public async Task<BrokerExecution?> GetRecentExecutionAsync(
+        string symbol,
+        TradeType tradeType,
+        string? optionsContract = null,
+        string? direction = null,
+        decimal? strike = null,
+        string? expiration = null,
+        CancellationToken ct = default)
+    {
+        if (!EnsureConnected()) return null;
+
+        var reqId = NextReqId();
+        var tcs = _connection.Wrapper.RegisterExecutionHistoryCallback(reqId);
+
+        var filter = new ExecutionFilter
+        {
+            Symbol  = symbol,
+            SecType = tradeType == TradeType.Options ? "OPT" : "STK",
+        };
+
+        _connection.Client.reqExecutions(reqId, filter);
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(_options.TimeoutMs);
+            var executions = await tcs.Task.WaitAsync(cts.Token);
+
+            var match = executions
+                .Where(e => e.Side == "SLD" && e.Time is not null)
+                .Where(e => optionsContract is null ||
+                    string.Equals(
+                        e.LocalSymbol?.Replace(" ", ""),
+                        optionsContract.Replace(" ", ""),
+                        StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(e => e.Time)
+                .FirstOrDefault();
+
+            if (match is null)
+            {
+                _logger.LogDebug("IBKR execution history — no matching SLD execution for {Symbol}.", symbol);
+                return null;
+            }
+
+            _logger.LogDebug(
+                "IBKR execution history — most recent fill for {Symbol}: ${Price:F2} at {Time}.",
+                symbol, match.Price, match.Time);
+
+            return new BrokerExecution(match.Price, match.Time!.Value);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("IBKR GetRecentExecution timed out for {Symbol}.", symbol);
+            _connection.Wrapper.UnregisterExecutionHistoryCallback(reqId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Fetches 1 minute intraday bars for a symbol between two bounds via reqHistoricalData.
+    /// Used by GhostPositionCloseOutService to approximate an exit price within a bounded
+    /// reconciliation window when no execution record is found.
+    /// </summary>
+    public async Task<List<IntradayBar>> GetIntradayBarsAsync(
+        string symbol,
+        TradeType tradeType,
+        string? direction,
+        decimal? strike,
+        string? expiration,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken ct = default)
+    {
+        if (!EnsureConnected()) return [];
+
+        var reqId = NextReqId();
+        var tcs = _connection.Wrapper.RegisterIntradayDataCallback(reqId);
+        var contract = BuildContract(symbol, tradeType, direction, strike, expiration);
+
+        var durationSeconds = Math.Max(60, (int)Math.Ceiling((end - start).TotalSeconds));
+        var endDateTimeEt = TimeZoneInfo.ConvertTime(end, EasternTime).ToString("yyyyMMdd HH:mm:ss");
+
+        _connection.Client.reqHistoricalData(
+            reqId,
+            contract,
+            endDateTimeEt,
+            $"{durationSeconds} S",
+            "1 min",
+            "TRADES",
+            1,
+            1,
+            false,
+            null);
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(30));
+            var bars = await tcs.Task.WaitAsync(cts.Token);
+
+            _logger.LogDebug(
+                "IBKR intraday bars received — {Symbol} {Count} bars between {Start} and {End}.",
+                symbol, bars.Count, start, end);
+
+            return bars;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("IBKR GetIntradayBars timed out for {Symbol}.", symbol);
+            _connection.Wrapper.UnregisterIntradayDataCallback(reqId);
+            return [];
+        }
+    }
+
+    /// <summary>
     /// Cancels an existing trail stop and places a new one with a tighter trail percentage.
     /// Looks up the entry order mapping before removing so exec callbacks are re-wired correctly.
     /// Returns the new stop order ID, or null if the broker is unavailable or parsing fails.
