@@ -31,6 +31,14 @@ public class SystemState
     public bool BlockCallsOverride { get; set; }
     public bool BlockHighOverride  { get; set; }
     public bool BlockLottoOverride { get; set; }
+
+    // True once the user has explicitly toggled the corresponding block flag from the
+    // dashboard. Sticky — regime-driven auto-sync must never overwrite a pinned flag in
+    // either direction. Persisted here (not just in Worker memory) so the pin survives a
+    // Worker restart.
+    public bool BlockCallsManuallySet { get; set; }
+    public bool BlockHighManuallySet  { get; set; }
+    public bool BlockLottoManuallySet { get; set; }
     public bool IbkrConnected { get; set; }
     public bool SignalRConnected { get; set; }
     public DateTimeOffset? WorkerHeartbeat { get; set; }

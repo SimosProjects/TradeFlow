@@ -16,10 +16,12 @@ import { LogPanel }            from '../components/LogPanel.jsx';
 export function DesktopLayout({
   data, paused,
   allowOverrideBlocks,
-  blockCalls, regimeBlocksCalls,
-  blockHigh, blockLotto,
+  blockCalls, blockCallsManuallySet,
+  blockHigh, blockHighManuallySet,
+  blockLotto, blockLottoManuallySet,
   onTogglePause, onToggleAllowOverrideBlocks,
   onToggleBlockCalls, onToggleBlockHigh, onToggleBlockLotto,
+  onResetBlockCallsToAuto, onResetBlockHighToAuto, onResetBlockLottoToAuto,
   onForceClose, lastUpdated,
 }) {
   const { timestamp, positions, closedToday, regime, account, riskConfig, traders, system } = data;
@@ -55,15 +57,20 @@ export function DesktopLayout({
             <ControlsPanel
               allowOverrideBlocks={allowOverrideBlocks}
               blockCalls={blockCalls}
-              regimeBlocksCalls={regimeBlocksCalls}
+              blockCallsManuallySet={blockCallsManuallySet}
               blockHigh={blockHigh}
+              blockHighManuallySet={blockHighManuallySet}
               blockLotto={blockLotto}
+              blockLottoManuallySet={blockLottoManuallySet}
               paused={paused}
               onToggleAllowOverrideBlocks={onToggleAllowOverrideBlocks}
               onTogglePause={onTogglePause}
               onToggleBlockCalls={onToggleBlockCalls}
               onToggleBlockHigh={onToggleBlockHigh}
               onToggleBlockLotto={onToggleBlockLotto}
+              onResetBlockCallsToAuto={onResetBlockCallsToAuto}
+              onResetBlockHighToAuto={onResetBlockHighToAuto}
+              onResetBlockLottoToAuto={onResetBlockLottoToAuto}
             />
             <RiskConfig
               blockHigh={blockHigh}
