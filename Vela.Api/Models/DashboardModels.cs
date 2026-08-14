@@ -48,6 +48,9 @@ public record AccountResponse(
 /// XtradesConnected: live SignalR connection state written by the Worker.
 /// MarketOpen: derived from current Eastern Time.
 /// BlockCallsOverride: dashboard-driven call block, independent of regime.
+/// BlockCallsManuallySet (and High/Lotto siblings): true once the user has explicitly toggled
+/// that flag from the dashboard. Sticky — the Worker will never let regime auto-sync revert a
+/// manually-set flag until the user changes it again, in either direction.
 /// AllowOptions: read-only snapshot of RiskEngineOptions.AllowOptions from the
 /// Worker's last startup, sourced from risk_config_overrides.config_json. The
 /// Worker only reads this from appsettings.json at startup, so this value cannot
@@ -64,6 +67,9 @@ public record SystemStatusResponse(
     bool BlockCallsOverride,
     bool BlockHighOverride,
     bool BlockLottoOverride,
+    bool BlockCallsManuallySet,
+    bool BlockHighManuallySet,
+    bool BlockLottoManuallySet,
     bool AllowOptions,
     DateTimeOffset? WorkerHeartbeat,
     DateTimeOffset? LastAlertAt

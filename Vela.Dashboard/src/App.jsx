@@ -53,6 +53,16 @@ export default function App() {
   const [blockHigh,  onToggleBlockHigh,  syncBlockHigh]    = useSessionToggle(null, '/api/dashboard/block-high',  'blockHighOverride');
   const [blockLotto, onToggleBlockLotto, syncBlockLotto]   = useSessionToggle(null, '/api/dashboard/block-lotto', 'blockLottoOverride');
 
+  // "Manually pinned" state per flag, and the reset-to-auto action that clears the pin. Reuses
+  // useSessionToggle even though this isn't a bidirectional toggle — the hook's shape (local
+  // value, a POST-and-sync action, a poll-sync function) is exactly what a one-way reset needs.
+  const [blockCallsManuallySet, onResetBlockCallsToAuto, syncBlockCallsManuallySet] =
+    useSessionToggle(null, '/api/dashboard/block-calls/reset-to-auto', 'blockCallsManuallySet');
+  const [blockHighManuallySet, onResetBlockHighToAuto, syncBlockHighManuallySet] =
+    useSessionToggle(null, '/api/dashboard/block-high/reset-to-auto', 'blockHighManuallySet');
+  const [blockLottoManuallySet, onResetBlockLottoToAuto, syncBlockLottoManuallySet] =
+    useSessionToggle(null, '/api/dashboard/block-lotto/reset-to-auto', 'blockLottoManuallySet');
+
   // Sync paused from API on each poll
   useEffect(() => {
     if (data.system?.isPaused !== undefined) setPaused(data.system.isPaused);
@@ -63,6 +73,9 @@ export default function App() {
   useEffect(() => { syncBlockCalls(data.regime?.blockCalls ?? false); },                  [data.regime?.blockCalls]);
   useEffect(() => { syncBlockHigh(data.system?.blockHighOverride ?? false); },             [data.system?.blockHighOverride]);
   useEffect(() => { syncBlockLotto(data.system?.blockLottoOverride ?? false); },           [data.system?.blockLottoOverride]);
+  useEffect(() => { syncBlockCallsManuallySet(data.system?.blockCallsManuallySet ?? false); }, [data.system?.blockCallsManuallySet]);
+  useEffect(() => { syncBlockHighManuallySet(data.system?.blockHighManuallySet ?? false); },   [data.system?.blockHighManuallySet]);
+  useEffect(() => { syncBlockLottoManuallySet(data.system?.blockLottoManuallySet ?? false); }, [data.system?.blockLottoManuallySet]);
 
   const onTogglePause = async () => {
     try {
@@ -93,22 +106,25 @@ export default function App() {
     setTimeout(() => setActionMsg(null), 6000);
   };
 
-  const regimeBlocksCalls = data.regime?.blockCalls ?? false;
-
   const layoutProps = {
     data,
     paused,
     allowOverrideBlocks,
     blockCalls,
-    regimeBlocksCalls,
+    blockCallsManuallySet,
     blockHigh,
+    blockHighManuallySet,
     blockLotto,
+    blockLottoManuallySet,
     lastUpdated,
     onTogglePause,
     onToggleAllowOverrideBlocks,
     onToggleBlockCalls,
     onToggleBlockHigh,
     onToggleBlockLotto,
+    onResetBlockCallsToAuto,
+    onResetBlockHighToAuto,
+    onResetBlockLottoToAuto,
     onForceClose: pos => setModalPosition(pos),
   };
 

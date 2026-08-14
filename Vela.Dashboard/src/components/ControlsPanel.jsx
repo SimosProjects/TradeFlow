@@ -44,17 +44,62 @@ function ToggleRow({ label, sublabel, on, onChange }) {
   );
 }
 
+// Shown under a row whose block flag is manually pinned — regime auto-sync will never revert
+// it, in either direction, until the user changes it again or explicitly returns it to auto.
+function PinnedBadge({ text, onReset }) {
+  return (
+    <div style={{
+      marginTop: 6,
+      padding: '4px 8px',
+      borderRadius: 4,
+      background: 'rgba(210,153,34,0.07)',
+      border: `1px solid rgba(210,153,34,0.22)`,
+      fontSize: 11,
+      color: B.am,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 8,
+    }}>
+      <span>{text}</span>
+      <button
+        onClick={onReset}
+        style={{
+          background: 'none',
+          border: 'none',
+          color: B.am,
+          textDecoration: 'underline',
+          cursor: 'pointer',
+          fontSize: 11,
+          padding: 0,
+          flexShrink: 0,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        Return to auto
+      </button>
+    </div>
+  );
+}
+
 /// Session Controls panel — all toggles fully controlled from App.jsx.
 /// allowOverrideBlocks: when true, regime checkpoints will not reset block settings.
-/// regimeBlocksCalls: whether Bearish regime drove the initial block calls state (for sublabel).
+/// blockXManuallySet: true once the user has explicitly toggled that flag from the dashboard —
+/// sticky, regime auto-sync will never revert it until the user changes it again. Pin badges
+/// are suppressed while allowOverrideBlocks is on, since the blanket lock notice above already
+/// covers all three and a second indicator would be redundant.
 export function ControlsPanel({
   allowOverrideBlocks = false,
-  blockCalls = false, regimeBlocksCalls = false,
+  blockCalls = false,
+  blockCallsManuallySet = false,
   blockHigh  = false,
+  blockHighManuallySet = false,
   blockLotto = false,
+  blockLottoManuallySet = false,
   paused     = false,
   onToggleAllowOverrideBlocks,
   onTogglePause, onToggleBlockCalls, onToggleBlockHigh, onToggleBlockLotto,
+  onResetBlockCallsToAuto, onResetBlockHighToAuto, onResetBlockLottoToAuto,
 }) {
   return (
     <Card>
@@ -87,13 +132,20 @@ export function ControlsPanel({
 
       <ToggleRow
         label="Block call entries"
-        sublabel={blockCalls
-          ? regimeBlocksCalls ? 'Active — seeded by Bearish regime' : 'Manual override active'
-          : 'Calls allowed'}
+        sublabel={
+          blockCalls
+            ? (blockCallsManuallySet ? 'Manually pinned — blocked' : 'Active — seeded by Bearish regime')
+            : (blockCallsManuallySet ? 'Manually pinned — unblocked' : 'Calls allowed')
+        }
         on={blockCalls}
         onChange={onToggleBlockCalls}
       />
-      {blockCalls && (
+      {blockCallsManuallySet && !allowOverrideBlocks ? (
+        <PinnedBadge
+          text={`📌 Pinned — ${blockCalls ? 'new call entries will be rejected' : 'calls allowed'} until you toggle it again.`}
+          onReset={onResetBlockCallsToAuto}
+        />
+      ) : blockCalls && (
         <div style={{ marginTop: 6, padding: '4px 8px', borderRadius: 4, background: 'rgba(210,153,34,0.07)', border: `1px solid rgba(210,153,34,0.22)`, fontSize: 11, color: B.am }}>
           ⚠ New call entries will be rejected by the risk engine
         </div>
@@ -103,19 +155,39 @@ export function ControlsPanel({
 
       <ToggleRow
         label="Block high risk"
-        sublabel={blockHigh ? 'This-week expiry entries blocked' : 'High risk allowed'}
+        sublabel={
+          blockHigh
+            ? (blockHighManuallySet ? 'Manually pinned — blocked' : 'This-week expiry entries blocked')
+            : (blockHighManuallySet ? 'Manually pinned — unblocked' : 'High risk allowed')
+        }
         on={blockHigh}
         onChange={onToggleBlockHigh}
       />
+      {blockHighManuallySet && !allowOverrideBlocks && (
+        <PinnedBadge
+          text={`📌 Pinned — ${blockHigh ? 'this-week expiry entries blocked' : 'high risk allowed'} until you toggle it again.`}
+          onReset={onResetBlockHighToAuto}
+        />
+      )}
 
       <div style={{ height: '0.5px', background: B.bd, margin: '10px 0' }} />
 
       <ToggleRow
         label="Block lotto (0DTE/1DTE)"
-        sublabel={blockLotto ? '0DTE and 1DTE entries blocked' : 'Lotto allowed'}
+        sublabel={
+          blockLotto
+            ? (blockLottoManuallySet ? 'Manually pinned — blocked' : '0DTE and 1DTE entries blocked')
+            : (blockLottoManuallySet ? 'Manually pinned — unblocked' : 'Lotto allowed')
+        }
         on={blockLotto}
         onChange={onToggleBlockLotto}
       />
+      {blockLottoManuallySet && !allowOverrideBlocks && (
+        <PinnedBadge
+          text={`📌 Pinned — ${blockLotto ? '0DTE and 1DTE entries blocked' : 'lotto allowed'} until you toggle it again.`}
+          onReset={onResetBlockLottoToAuto}
+        />
+      )}
 
       <div style={{ height: '0.5px', background: B.bd, margin: '12px 0' }} />
 

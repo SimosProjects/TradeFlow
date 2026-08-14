@@ -47,6 +47,15 @@ public static class DashboardEndpoints
         group.MapPost("/block-lotto", ToggleBlockLotto).WithName("ToggleBlockLotto")
              .WithSummary("Flips block_lotto_override in system_state. Applied by the Worker within 30 seconds.");
 
+        group.MapPost("/block-calls/reset-to-auto", ResetBlockCallsToAuto).WithName("ResetBlockCallsToAuto")
+             .WithSummary("Clears the manual pin on block_calls_override so regime auto-management resumes. Applied by the Worker within a few seconds.");
+
+        group.MapPost("/block-high/reset-to-auto", ResetBlockHighToAuto).WithName("ResetBlockHighToAuto")
+             .WithSummary("Clears the manual pin on block_high_override so regime auto-management resumes. Applied by the Worker within a few seconds.");
+
+        group.MapPost("/block-lotto/reset-to-auto", ResetBlockLottoToAuto).WithName("ResetBlockLottoToAuto")
+             .WithSummary("Clears the manual pin on block_lotto_override so regime auto-management resumes. Applied by the Worker within a few seconds.");
+
         group.MapPost("/regime", OverrideRegime).WithName("OverrideRegime")
              .WithSummary("Queues a manual regime override. Applied by the Worker within 30 seconds.");
 
@@ -150,18 +159,21 @@ public static class DashboardEndpoints
         );
 
         var system = new SystemStatusResponse(
-            IbkrConnected:       state?.IbkrConnected ?? false,
-            XtradesConnected:    xtradesConnected,
-            WorkerRunning:       workerRunning,
-            MarketOpen:          marketOpen,
-            IsPaused:            state?.IsPaused ?? false,
-            AllowOverrideBlocks: state?.AllowOverrideBlocks ?? false,
-            BlockCallsOverride:  state?.BlockCallsOverride ?? false,
-            BlockHighOverride:   state?.BlockHighOverride ?? false,
-            BlockLottoOverride:  state?.BlockLottoOverride ?? false,
-            AllowOptions:        ParseAllowOptions(riskConfigJson?.ConfigJson),
-            WorkerHeartbeat:     state?.WorkerHeartbeat,
-            LastAlertAt:         lastAlertAt
+            IbkrConnected:         state?.IbkrConnected ?? false,
+            XtradesConnected:      xtradesConnected,
+            WorkerRunning:         workerRunning,
+            MarketOpen:            marketOpen,
+            IsPaused:              state?.IsPaused ?? false,
+            AllowOverrideBlocks:   state?.AllowOverrideBlocks ?? false,
+            BlockCallsOverride:    state?.BlockCallsOverride ?? false,
+            BlockHighOverride:     state?.BlockHighOverride ?? false,
+            BlockLottoOverride:    state?.BlockLottoOverride ?? false,
+            BlockCallsManuallySet: state?.BlockCallsManuallySet ?? false,
+            BlockHighManuallySet:  state?.BlockHighManuallySet ?? false,
+            BlockLottoManuallySet: state?.BlockLottoManuallySet ?? false,
+            AllowOptions:          ParseAllowOptions(riskConfigJson?.ConfigJson),
+            WorkerHeartbeat:       state?.WorkerHeartbeat,
+            LastAlertAt:           lastAlertAt
         );
 
         return Results.Ok(new DashboardStateResponse(regime, account, system));
@@ -351,6 +363,45 @@ public static class DashboardEndpoints
             .ExecuteUpdateAsync(s => s.SetProperty(x => x.BlockLottoOverride, newOverride), ct);
 
         return Results.Ok(new { blockLottoOverride = newOverride });
+    }
+
+    private static async Task<IResult> ResetBlockCallsToAuto(VelaDbContext db, CancellationToken ct)
+    {
+        var state = await db.SystemState.FirstOrDefaultAsync(s => s.Id == 1, ct);
+        if (state is null)
+            return Results.NotFound("system_state row not yet initialised — is the Worker running?");
+
+        await db.SystemState
+            .Where(s => s.Id == 1)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.BlockCallsManuallySet, false), ct);
+
+        return Results.Ok(new { blockCallsManuallySet = false });
+    }
+
+    private static async Task<IResult> ResetBlockHighToAuto(VelaDbContext db, CancellationToken ct)
+    {
+        var state = await db.SystemState.FirstOrDefaultAsync(s => s.Id == 1, ct);
+        if (state is null)
+            return Results.NotFound("system_state row not yet initialised — is the Worker running?");
+
+        await db.SystemState
+            .Where(s => s.Id == 1)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.BlockHighManuallySet, false), ct);
+
+        return Results.Ok(new { blockHighManuallySet = false });
+    }
+
+    private static async Task<IResult> ResetBlockLottoToAuto(VelaDbContext db, CancellationToken ct)
+    {
+        var state = await db.SystemState.FirstOrDefaultAsync(s => s.Id == 1, ct);
+        if (state is null)
+            return Results.NotFound("system_state row not yet initialised — is the Worker running?");
+
+        await db.SystemState
+            .Where(s => s.Id == 1)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.BlockLottoManuallySet, false), ct);
+
+        return Results.Ok(new { blockLottoManuallySet = false });
     }
 
     private static async Task<IResult> OverrideRegime(

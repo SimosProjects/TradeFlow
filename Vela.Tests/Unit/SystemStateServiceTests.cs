@@ -254,4 +254,201 @@ public class SystemStateServiceTests
         row!.RegimeTier.Should().Be("Unknown");
         row.SizingMultiplier.Should().Be(1.0m);
     }
+
+    // -- Manual block-flag pin tests (2026-08-13 QQQ lotto incident) --
+    //
+    // A manually pinned block flag must never be silently reverted by regime auto-sync, in
+    // either direction, until the user changes it again. Reproduces the exact incident: a
+    // dashboard Block Lotto toggle was silently reverted by the next Bullish-regime checkpoint,
+    // letting a lotto trade through despite the user believing it was blocked.
+
+    [Fact]
+    public async Task UpdateRegime_AfterManualLottoPin_DoesNotRevertToRegimeDerivedValue()
+    {
+        var (svc, dbName) = BuildService();
+
+        // First checkpoint establishes Bullish regime — lotto is unblocked per regime.
+        svc.UpdateRegime("Bullish", 1.0m, false, 578m, 572m, 561m, 521m, 13m, -1m, 1);
+        await svc.WriteHeartbeatAsync(CancellationToken.None);
+
+        // User manually blocks lotto via the dashboard despite the Bullish regime.
+        using (var seed = OpenDb(dbName))
+        {
+            var row = await seed.SystemState.FindAsync(1);
+            row!.BlockLottoOverride = true;
+            await seed.SaveChangesAsync();
+        }
+        await svc.WriteHeartbeatAsync(CancellationToken.None); // detects the DB change, pins it
+
+        using (var verify = OpenDb(dbName))
+        {
+            var row = await verify.SystemState.FindAsync(1);
+            row!.BlockLottoOverride.Should().BeTrue("manual toggle should have been pinned");
+            row.BlockLottoManuallySet.Should().BeTrue();
+        }
+
+        // A fresh regime checkpoint fires — still Bullish, still says lotto shouldn't be
+        // blocked. The pin must hold — this is the exact incident.
+        svc.UpdateRegime("Bullish", 1.0m, false, 580m, 572m, 561m, 521m, 13m, -1m, 1);
+        await svc.WriteHeartbeatAsync(CancellationToken.None);
+
+        using (var verify = OpenDb(dbName))
+        {
+            var row = await verify.SystemState.FindAsync(1);
+            row!.BlockLottoOverride.Should().BeTrue(
+                "a manually pinned block flag must survive a regime checkpoint, in either direction");
+        }
+    }
+
+    [Fact]
+    public async Task ApplyRegimeDerivedBlocks_AfterManualLottoPin_DoesNotRevertToRegimeDerivedValue()
+    {
+        var (svc, dbName) = BuildService();
+
+        svc.UpdateRegime("Bullish", 1.0m, false, 578m, 572m, 561m, 521m, 13m, -1m, 1);
+        await svc.WriteHeartbeatAsync(CancellationToken.None);
+
+        // User enables the blanket override AND manually blocks lotto.
+        using (var seed = OpenDb(dbName))
+        {
+            var row = await seed.SystemState.FindAsync(1);
+            row!.AllowOverrideBlocks = true;
+            row.BlockLottoOverride = true;
+            await seed.SaveChangesAsync();
+        }
+        await svc.WriteHeartbeatAsync(CancellationToken.None); // detects both changes, pins lotto
+
+        using (var verify = OpenDb(dbName))
+        {
+            var row = await verify.SystemState.FindAsync(1);
+            row!.BlockLottoManuallySet.Should().BeTrue();
+        }
+
+        // User disables the blanket override — this fires ApplyRegimeDerivedBlocks(), which
+        // must still respect the per-flag pin even though blanket protection just ended.
+        using (var seed = OpenDb(dbName))
+        {
+            var row = await seed.SystemState.FindAsync(1);
+            row!.AllowOverrideBlocks = false;
+            await seed.SaveChangesAsync();
+        }
+        await svc.WriteHeartbeatAsync(CancellationToken.None); // fires ApplyRegimeDerivedBlocks
+        await svc.WriteHeartbeatAsync(CancellationToken.None); // flushes the pinned value to DB
+
+        using (var verify = OpenDb(dbName))
+        {
+            var row = await verify.SystemState.FindAsync(1);
+            row!.BlockLottoOverride.Should().BeTrue(
+                "disabling the blanket override must not itself revert a manually pinned flag");
+        }
+    }
+
+    [Fact]
+    public async Task LoadRegimeFromDatabaseAsync_WithPersistedManualPin_RestoresPinnedValueNotRegimeDerived()
+    {
+        var (svc, dbName) = BuildService();
+
+        using (var seed = OpenDb(dbName))
+        {
+            seed.SystemState.Add(new SystemState
+            {
+                Id = 1,
+                RegimeTier = "Bullish",           // regime-derived lotto value would be false
+                AllowOverrideBlocks = false,
+                BlockLottoOverride = true,         // but the user pinned it blocked
+                BlockLottoManuallySet = true,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        bool? observedLotto = null;
+        svc.BlockLottoOverrideChanged += v => observedLotto = v;
+
+        // svc is a fresh instance from BuildService with no manual-pin state in memory yet —
+        // exactly like a real Worker restart reading persisted state for the first time.
+        await svc.LoadRegimeFromDatabaseAsync(CancellationToken.None);
+
+        observedLotto.Should().BeTrue(
+            "a manual pin must survive a Worker restart, not reset to the regime-derived value");
+
+        using var verify = OpenDb(dbName);
+        var row = await verify.SystemState.FindAsync(1);
+        row!.BlockLottoOverride.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task WriteHeartbeat_WhenManuallySetFlagCleared_ImmediatelyRestoresRegimeDerivedValue()
+    {
+        // "Return to regime auto-management" only clears the pin flag from the dashboard — the
+        // Worker must notice that on its next heartbeat and immediately re-derive the value from
+        // the current regime, not leave it stuck at the last pinned value for up to ~2 hours
+        // until the next scheduled MarketConditions checkpoint.
+        var (svc, dbName) = BuildService();
+
+        svc.UpdateRegime("Bullish", 1.0m, false, 578m, 572m, 561m, 521m, 13m, -1m, 1);
+        await svc.WriteHeartbeatAsync(CancellationToken.None);
+
+        using (var seed = OpenDb(dbName))
+        {
+            var row = await seed.SystemState.FindAsync(1);
+            row!.BlockLottoOverride = true;
+            await seed.SaveChangesAsync();
+        }
+        await svc.WriteHeartbeatAsync(CancellationToken.None); // pins it
+
+        using (var verify = OpenDb(dbName))
+        {
+            var row = await verify.SystemState.FindAsync(1);
+            row!.BlockLottoManuallySet.Should().BeTrue();
+        }
+
+        // User clicks "Return to auto" — the dashboard clears only the pin flag.
+        using (var seed = OpenDb(dbName))
+        {
+            var row = await seed.SystemState.FindAsync(1);
+            row!.BlockLottoManuallySet = false;
+            await seed.SaveChangesAsync();
+        }
+        await svc.WriteHeartbeatAsync(CancellationToken.None);
+
+        using (var verify = OpenDb(dbName))
+        {
+            var row = await verify.SystemState.FindAsync(1);
+            row!.BlockLottoManuallySet.Should().BeFalse();
+            row.BlockLottoOverride.Should().BeFalse(
+                "clearing the pin must immediately re-derive from the current Bullish regime, " +
+                "not wait for the next scheduled checkpoint");
+        }
+    }
+
+    [Fact]
+    public async Task LoadRegimeFromDatabaseAsync_WithAllowOverrideBlocksTrue_RestoresDbValuesRegardlessOfPinFlag()
+    {
+        // Confirms the existing blanket AllowOverrideBlocks=true path is unchanged by this fix
+        // — it protects all three flags on its own, independent of per-flag pinning.
+        var (svc, dbName) = BuildService();
+
+        using (var seed = OpenDb(dbName))
+        {
+            seed.SystemState.Add(new SystemState
+            {
+                Id = 1,
+                RegimeTier = "Bullish",           // regime-derived would be false for all three
+                AllowOverrideBlocks = true,
+                BlockCallsOverride = true,
+                BlockHighOverride = true,
+                BlockLottoOverride = true,
+                // None of the *ManuallySet flags are set — the blanket override alone protects.
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        await svc.LoadRegimeFromDatabaseAsync(CancellationToken.None);
+
+        using var verify = OpenDb(dbName);
+        var row = await verify.SystemState.FindAsync(1);
+        row!.BlockCallsOverride.Should().BeTrue("AllowOverrideBlocks=true must restore DB values as-is");
+        row.BlockHighOverride.Should().BeTrue();
+        row.BlockLottoOverride.Should().BeTrue();
+    }
 }
