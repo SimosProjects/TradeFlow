@@ -266,9 +266,10 @@ public class PositionSizer
                 : _options.OptionsStandardMaxSlippagePct
             : _options.StockMaxSlippagePct;
 
-        // Raising StockMaxSlippagePct above 0 reintroduces limit orders on stocks and reactivates
-        // the untested price-protection retry-then-still-rejected branch in
-        // BrokerExecutionService.ExecuteBrokerEntryAsync (see Vela_Master_Backlog.md).
+        // Raising StockMaxSlippagePct above 0 reintroduces limit orders on stocks, which
+        // activates the price-protection retry path in
+        // BrokerExecutionService.RetryWithMarketAnchoredLimitAsync — covered by regression
+        // tests as of 2026-08-25 (see BrokerExecutionServiceTests).
         if (threshold <= 0)
             return null;
 

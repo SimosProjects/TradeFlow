@@ -151,9 +151,9 @@ public class HtmlReportGenerator
 
         return Section("1. Executive Summary",
             KpiGrid(
-                Kpi("Total Trades",        d.TotalTrades.ToString()),
-                Kpi("Closed Trades",       d.ClosedTrades.ToString()),
-                Kpi("Open Trades",         d.OpenTrades.ToString(),  d.OpenTrades > 0 ? "amber" : ""),
+                Kpi("Trades Opened",       d.TotalTrades.ToString()),
+                Kpi("Trades Closed",       d.ClosedTrades.ToString()),
+                Kpi("Still Open",          d.OpenTrades.ToString(),  d.OpenTrades > 0 ? "amber" : ""),
                 Kpi("Total P&amp;L",       $"{pnlSign}${d.TotalPnL:N2}", pnlClass),
                 Kpi("Avg P&amp;L / Trade", $"{avgSign}${d.AvgPnLPerTrade:N2}", avgClass),
                 Kpi("Win Rate",            $"{d.WinRatePct:F1}%",   d.WinRatePct >= 50 ? "green" : "red"),
