@@ -92,8 +92,14 @@ public class BrokerExecutionService
         try
         {
             var orderSubmittedAt = DateTimeOffset.UtcNow;
-            var result = await ExecuteBrokerEntryAsync(alert, order, alertedPrice, ct);
-            if (result is null) return;
+            var entryResult = await ExecuteBrokerEntryAsync(alert, order, alertedPrice, ct);
+            if (entryResult is null) return;
+
+            // ExecuteBrokerEntryAsync hands back the order actually sent to the broker, not
+            // necessarily the one PositionSizer produced — the price-protection retry path
+            // replaces LimitPrice before resubmitting, and everything downstream (TradeGuard,
+            // trade_metrics, CSV) must reflect what was really ordered.
+            (order, var result) = entryResult.Value;
 
             // Must run before RegisterOpen so the updated StopOrderId is stored in TradeGuard and DB.
             result = await TightenTrailOnElevatedSlippageAsync(order, result, alertedPrice, ct);
@@ -724,7 +730,10 @@ public class BrokerExecutionService
     // responses (including the price-protection retry path), and Pending (limit timeout).
     // Returns null on any non-recoverable failure so HandleEntryAsync can exit cleanly
     // while the finally block releases the TradeGuard reservation.
-    private async Task<BrokerOrderResult?> ExecuteBrokerEntryAsync(
+    // The returned order is whatever was actually sent to the broker — on a price-protection
+    // retry that is a copy of the input order with LimitPrice replaced, not the input order
+    // itself, so callers must use the returned order for anything persisted afterward.
+    private async Task<(TradeOrder Order, BrokerOrderResult Result)?> ExecuteBrokerEntryAsync(
         Alert alert,
         TradeOrder order,
         decimal alertedPrice,
@@ -751,7 +760,7 @@ public class BrokerExecutionService
                 order.LimitPrice.HasValue &&
                 TryParsePriceProtectionMarketPrice(result.RejectionReason, out var marketPrice))
             {
-                result = await RetryWithMarketAnchoredLimitAsync(order, result, alertedPrice, marketPrice, ct);
+                (order, result) = await RetryWithMarketAnchoredLimitAsync(order, result, alertedPrice, marketPrice, ct);
                 if (result.Status == OrderStatus.Rejected || result.Status == OrderStatus.Cancelled)
                 {
                     _logger.LogWarning(
@@ -781,7 +790,7 @@ public class BrokerExecutionService
             result = await VerifyPendingFillAsync(alert, order, result, ct);
         }
 
-        return result;
+        return (order, result);
     }
 
     // Writes a rejected/cancelled/failed entry attempt to order_rejections for analytics.
@@ -1159,37 +1168,53 @@ public class BrokerExecutionService
     }
 
     // Recalculates the stock limit relative to the market price IBKR reported in its rejection
-    // and retries PlaceOrderAsync once. The new limit is capped at the original alert-price
-    // ceiling so we still reject if the stock has moved too far from the alerted level.
-    private async Task<BrokerOrderResult> RetryWithMarketAnchoredLimitAsync(
+    // and retries PlaceOrderAsync once.
+    //
+    // Skips the retry when the market has moved too far from the alert price to trust the
+    // alert as still fresh. This used to be checked by comparing the recalculated limit against
+    // the original alert-based ceiling, but both values carry the same slippage multiplier
+    // (adjustedLimit = marketPrice * (1+s), alertCeiling = alertedPrice * (1+s)), so that
+    // comparison always collapsed to "is marketPrice above alertedPrice at all" regardless of
+    // s — tripping on moves as small as $0.01 and skipping nearly every retry where price ticked
+    // up since the alert. Confirmed live 2026-08-25 (DXCM: alert $90.38, market $90.50, a 0.13%
+    // move, skipped as "too far from alert"). Compare the market move itself against a real
+    // tolerance instead.
+    private async Task<(TradeOrder Order, BrokerOrderResult Result)> RetryWithMarketAnchoredLimitAsync(
         TradeOrder order,
         BrokerOrderResult originalResult,
         decimal alertedPrice,
         decimal marketPrice,
         CancellationToken ct)
     {
-        // Back-calculate effective slippage pct from the original limit so the retry works
-        // correctly for all risk tiers without needing to know which tier's config value to apply.
-        var effectiveSlippagePct = alertedPrice > 0
-            ? (order.LimitPrice!.Value - alertedPrice) / alertedPrice * 100m
-            : 0m;
+        if (alertedPrice <= 0)
+            return (order, originalResult);
 
-        var adjustedLimit = Math.Round(
-            marketPrice * (1m + effectiveSlippagePct / 100m), 2);
+        var marketMovePct = (marketPrice - alertedPrice) / alertedPrice * 100m;
 
-        // The original limit IS the alert ceiling — it was set as alertPrice × (1 + slippage%).
-        // If the market moved up, adjustedLimit > original limit, meaning price ran away.
-        // Only retry when the market dropped and we can get a tighter, acceptable fill.
-        var alertCeiling = order.LimitPrice!.Value;
+        var isStock = order.TradeType == TradeType.Stock;
+        var maxMovePct = isStock && _riskOptions.StockAlertStalenessMaxSlippagePct > 0
+            ? _riskOptions.StockAlertStalenessMaxSlippagePct
+            : !isStock && _riskOptions.OptionsAlertStalenessMaxSlippagePct > 0
+                ? _riskOptions.OptionsAlertStalenessMaxSlippagePct
+                : _riskOptions.AlertStalenessMaxSlippagePct;
 
-        if (adjustedLimit > alertCeiling)
+        if (marketMovePct > maxMovePct)
         {
             _logger.LogWarning(
-                "Price-protection retry skipped for {Symbol} — adjusted limit ${AdjLimit:F2} " +
-                "exceeds alert ceiling ${Ceiling:F2}, price moved too far from alert.",
-                order.Symbol, adjustedLimit, alertCeiling);
-            return originalResult;
+                "Price-protection retry skipped for {Symbol} — market ${Market:F2} is {Move:F2}% " +
+                "above alert ${Alert:F2}, exceeds {Max:F1}% staleness tolerance.",
+                order.Symbol, marketPrice, marketMovePct, alertedPrice, maxMovePct);
+            return (order, originalResult);
         }
+
+        // Re-anchor to the live market price using the same tight staleness tolerance rather
+        // than the original order's slippage cushion (up to 15-20%) — a cushion that wide is
+        // itself far enough from market to be what got the order price-protection rejected
+        // in the first place, so reusing it here just reproduces the rejection (confirmed
+        // live 2026-08-25: LLY's retry used the 15% cushion and was rejected again by IBKR's
+        // own limit-aggressiveness check).
+        var adjustedLimit = Math.Round(marketPrice * (1m + maxMovePct / 100m), 2);
+        var retryOrder = order with { LimitPrice = adjustedLimit };
 
         _logger.LogInformation(
             "Retrying {Symbol} with market-anchored limit ${NewLimit:F2} " +
@@ -1198,12 +1223,13 @@ public class BrokerExecutionService
 
         try
         {
-            return await _broker.PlaceOrderAsync(order with { LimitPrice = adjustedLimit }, ct);
+            var retryResult = await _broker.PlaceOrderAsync(retryOrder, ct);
+            return (retryOrder, retryResult);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Price-protection retry failed for {Symbol}", order.Symbol);
-            return originalResult;
+            return (order, originalResult);
         }
     }
 

@@ -180,6 +180,25 @@ public class BrokerExecutionServiceTests
     private static AlertClassification CallClassification() =>
         new(AlertCategory.CallOptionEntry, "Call option entry");
 
+    private static AlertClassification StockClassification() =>
+        new(AlertCategory.StockEntry, "Stock entry");
+
+    // BuildService only threads custom options into BrokerExecutionService's own _riskOptions
+    // (retry guard, trail tightening); PositionSizer._options stays fixed at defaults. The
+    // price-protection retry tests need one RiskEngineOptions instance driving both the
+    // initial LimitPrice (PositionSizer) and the retry guard (BrokerExecutionService).
+    private BrokerExecutionService BuildServiceWithSizerOptions(RiskEngineOptions options) =>
+        new(
+            _brokerMock.Object,
+            new PositionSizer(Options.Create(options), NullLogger<PositionSizer>.Instance),
+            _guard,
+            new CsvTradeLogger(TestConfig, NullLogger<CsvTradeLogger>.Instance),
+            new DiscordNotificationService(NullLogger<DiscordNotificationService>.Instance),
+            _scopeFactory,
+            NullLogger<BrokerExecutionService>.Instance,
+            Options.Create(options),
+            isMarketOpen: () => true);
+
     [Fact]
     public async Task HandleEntryAsync_SkipsWhenMarketClosed()
     {
@@ -733,6 +752,172 @@ public class BrokerExecutionServiceTests
             It.Is<OrderRejection>(o =>
                 o.Symbol == "TSLA" &&
                 o.Reason == "PRICE_PROTECTION:5.90"),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleEntryAsync_PriceProtectionRetry_SmallUptickNoLongerSkipped()
+    {
+        // Regression, live incident 2026-08-25: DXCM alert $90.38, IBKR-reported market $90.50
+        // (a 0.13% move) was skipped as "price moved too far from alert" by the old guard,
+        // which compared adjustedLimit (marketPrice * 1.15) against alertCeiling
+        // (alertedPrice * 1.15) — both carrying the same multiplier, so the comparison always
+        // collapsed to "is market above alert at all" regardless of size. A 0.13% move is well
+        // within the 2% stock staleness tolerance and must now retry.
+        var options = new RiskEngineOptions { StockMaxSlippagePct = 15.0m };
+
+        const decimal alertPrice  = 90.38m;
+        const decimal marketPrice = 90.50m;
+        var originalLimit = Math.Round(alertPrice * 1.15m, 2);  // 103.94
+        var retryLimit    = Math.Round(marketPrice * 1.02m, 2); // 92.31 — staleness tolerance, not the 15% cushion
+
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.Is<TradeOrder>(o => o.LimitPrice == originalLimit), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "1", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Cancelled, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: $"PRICE_PROTECTION:{marketPrice}"));
+
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.Is<TradeOrder>(o => o.LimitPrice == retryLimit), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "2", StopOrderId: "STOP-2", TargetOrderId: null,
+                FillPrice: marketPrice, FillQuantity: 1, FillAmount: marketPrice,
+                Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        var service = BuildServiceWithSizerOptions(options);
+        var alert   = BuildAlert(
+            side: "bto", type: "commons", direction: "none",
+            pricePaid: alertPrice, contractSymbol: null, strike: null);
+
+        await service.HandleEntryAsync(alert, StockClassification());
+
+        _brokerMock.Verify(b => b.PlaceOrderAsync(
+            It.Is<TradeOrder>(o => o.LimitPrice == retryLimit), default), Times.Once);
+        _guard.GetOpenTrades().Should().ContainSingle(t => t.Symbol == "TSLA");
+    }
+
+    [Fact]
+    public async Task HandleEntryAsync_PriceProtectionRetry_DownwardMoveUsesTightCushionNotOriginal()
+    {
+        // Regression, live incident 2026-08-25: LLY's retry (market $1257.66 below alert
+        // $1258.54) fired but reused the original order's 15% slippage cushion
+        // (marketPrice * 1.15) — still far enough from the live NBBO to trip IBKR's own
+        // limit-aggressiveness rejection right back. The retry must re-anchor using the tight
+        // staleness tolerance (2% for stocks), not the wide cushion baked into the original limit.
+        var options = new RiskEngineOptions { StockMaxSlippagePct = 15.0m };
+
+        const decimal alertPrice   = 1258.54m;
+        const decimal marketPrice  = 1257.66m; // below alert
+        var originalLimit  = Math.Round(alertPrice * 1.15m, 2);
+        var wideRetryLimit  = Math.Round(marketPrice * 1.15m, 2); // old, broken cushion — must never fire
+        var tightRetryLimit = Math.Round(marketPrice * 1.02m, 2); // new, tolerance-based cushion
+
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.Is<TradeOrder>(o => o.LimitPrice == originalLimit), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "1", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Cancelled, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: $"PRICE_PROTECTION:{marketPrice}"));
+
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.Is<TradeOrder>(o => o.LimitPrice == tightRetryLimit), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "2", StopOrderId: "STOP-2", TargetOrderId: null,
+                FillPrice: marketPrice, FillQuantity: 1, FillAmount: marketPrice,
+                Status: OrderStatus.Filled, FilledAt: DateTimeOffset.UtcNow));
+
+        var service = BuildServiceWithSizerOptions(options);
+        var alert   = BuildAlert(
+            side: "bto", type: "commons", direction: "none",
+            pricePaid: alertPrice, contractSymbol: null, strike: null);
+
+        await service.HandleEntryAsync(alert, StockClassification());
+
+        _brokerMock.Verify(b => b.PlaceOrderAsync(
+            It.Is<TradeOrder>(o => o.LimitPrice == tightRetryLimit), default), Times.Once);
+        _brokerMock.Verify(b => b.PlaceOrderAsync(
+            It.Is<TradeOrder>(o => o.LimitPrice == wideRetryLimit), default), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleEntryAsync_PriceProtectionRetry_LargeMoveStillSkipped()
+    {
+        // The retry must still bail out when the market has genuinely run away from the alert,
+        // not fire unconditionally now that the degenerate comparison is gone. A 5.1% move
+        // exceeds the 2% stock staleness tolerance.
+        var options = new RiskEngineOptions { StockMaxSlippagePct = 15.0m };
+
+        const decimal alertPrice  = 90.38m;
+        const decimal marketPrice = 95.00m; // ~5.1% above alert
+        var originalLimit = Math.Round(alertPrice * 1.15m, 2);
+
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.IsAny<TradeOrder>(), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "1", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Cancelled, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: $"PRICE_PROTECTION:{marketPrice}"));
+
+        var service = BuildServiceWithSizerOptions(options);
+        var alert   = BuildAlert(
+            side: "bto", type: "commons", direction: "none",
+            pricePaid: alertPrice, contractSymbol: null, strike: null);
+
+        await service.HandleEntryAsync(alert, StockClassification());
+
+        _brokerMock.Verify(b => b.PlaceOrderAsync(It.IsAny<TradeOrder>(), default), Times.Once);
+        _guard.GetOpenTrades().Should().BeEmpty();
+        _rejectionsMock.Verify(r => r.SaveAsync(
+            It.Is<OrderRejection>(o => o.RequestedPrice == originalLimit),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task HandleEntryAsync_PriceProtectionRetry_RejectedAgain_PersistsRetriedLimitNotOriginal()
+    {
+        // ExecuteBrokerEntryAsync must hand back the order actually sent on retry, not the
+        // pre-retry order — otherwise PersistRejectionAsync logs the stale original limit even
+        // though IBKR rejected a different price. Mirrors LLY's second, independent rejection
+        // (IBKR's own limit-aggressiveness check) from the 2026-08-25 incident.
+        var options = new RiskEngineOptions { StockMaxSlippagePct = 15.0m };
+
+        const decimal alertPrice  = 1258.54m;
+        const decimal marketPrice = 1257.66m;
+        var originalLimit = Math.Round(alertPrice * 1.15m, 2);
+        var retryLimit    = Math.Round(marketPrice * 1.02m, 2);
+
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.Is<TradeOrder>(o => o.LimitPrice == originalLimit), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "1", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Cancelled, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: $"PRICE_PROTECTION:{marketPrice}"));
+
+        _brokerMock
+            .Setup(b => b.PlaceOrderAsync(It.Is<TradeOrder>(o => o.LimitPrice == retryLimit), default))
+            .ReturnsAsync(new BrokerOrderResult(
+                OrderId: "2", StopOrderId: null, TargetOrderId: null,
+                FillPrice: 0m, FillQuantity: 0, FillAmount: 0m,
+                Status: OrderStatus.Rejected, FilledAt: DateTimeOffset.UtcNow,
+                RejectionReason: "IBKR limit aggressiveness check"));
+
+        var service = BuildServiceWithSizerOptions(options);
+        var alert   = BuildAlert(
+            side: "bto", type: "commons", direction: "none",
+            pricePaid: alertPrice, contractSymbol: null, strike: null);
+
+        await service.HandleEntryAsync(alert, StockClassification());
+
+        _guard.GetOpenTrades().Should().BeEmpty();
+        _rejectionsMock.Verify(r => r.SaveAsync(
+            It.Is<OrderRejection>(o =>
+                o.RequestedPrice == retryLimit &&
+                o.Reason == "IBKR limit aggressiveness check"),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

@@ -256,16 +256,31 @@ public class AnalyticsEngine
             "Running analytics: {Report} | {From:yyyy-MM-dd} to {To:yyyy-MM-dd}",
             options.Report, options.From, options.To);
 
-        // Load all trades in the period into memory, volumes are low enough
-        // that in-memory calculation is cleaner than complex SQL expressions
-        var trades = await _db.TradeMetrics
+        // Entries opened in the period, keyed on AlertReceivedAt, drives entry-activity stats
+        // (latency, slippage, exposure, filter rate). A trade opened this period but closed in
+        // a later one still counts as an entry here and as open below, exactly as it was live.
+        var openedInWindow = await _db.TradeMetrics
             .AsNoTracking()
             .Where(m => m.AlertReceivedAt >= options.From
                      && m.AlertReceivedAt <  options.To)
             .OrderBy(m => m.AlertReceivedAt)
             .ToListAsync();
 
-        _logger.LogInformation("Loaded {Count} trade metrics for period.", trades.Count);
+        // Trades closed in the period, keyed on ClosedAt regardless of when they were opened,
+        // drives every realized-P&L section (win/loss, outcome breakdown, trader/symbol
+        // performance). Filtering these by AlertReceivedAt instead would silently drop any
+        // trade whose open and close fall in different report periods, dropping its P&L
+        // from every report rather than just misattributing it to the wrong one.
+        var closedInWindow = await _db.TradeMetrics
+            .AsNoTracking()
+            .Where(m => m.ClosedAt >= options.From
+                     && m.ClosedAt <  options.To)
+            .OrderBy(m => m.ClosedAt)
+            .ToListAsync();
+
+        _logger.LogInformation(
+            "Loaded {OpenedCount} opened / {ClosedCount} closed trade metrics for period.",
+            openedInWindow.Count, closedInWindow.Count);
 
         // Total alerts in the same period from the alerts table
         var totalAlerts = await _db.Alerts
@@ -274,15 +289,22 @@ public class AnalyticsEngine
                      && a.IngestedAt <  options.To)
             .CountAsync();
 
-        var closed = trades.Where(t => t.ClosedAt.HasValue).ToList();
-        var open   = trades.Where(t => !t.ClosedAt.HasValue).ToList();
+        var open = openedInWindow.Where(t => !t.ClosedAt.HasValue).ToList();
 
-        var wins      = closed.Where(t => t.PnL > 0).ToList();
-        var losses    = closed.Where(t => t.PnL < 0).ToList();
-        var breakEvens = closed.Where(t => t.PnL == 0).ToList();
+        var wins       = closedInWindow.Where(t => t.PnL > 0).ToList();
+        var losses     = closedInWindow.Where(t => t.PnL < 0).ToList();
+        var breakEvens = closedInWindow.Where(t => t.PnL == 0).ToList();
 
-        var options_trades = trades.Where(t => t.TradeType == "Options").ToList();
-        var stock_trades   = trades.Where(t => t.TradeType == "Stock").ToList();
+        var options_trades = openedInWindow.Where(t => t.TradeType == "Options").ToList();
+        var stock_trades   = openedInWindow.Where(t => t.TradeType == "Stock").ToList();
+
+        // All trades touched by this period, either opened in it or closed in it, for the
+        // detail table only — aggregate stats above stay scoped to their own population.
+        var allRelevantTrades = openedInWindow
+            .Concat(closedInWindow)
+            .DistinctBy(t => t.Id)
+            .OrderBy(t => t.AlertReceivedAt)
+            .ToList();
 
         // Rejected/cancelled/failed entry attempts in the same period
         var rejections = await _db.OrderRejections
@@ -308,7 +330,7 @@ public class AnalyticsEngine
             .OrderBy(h => h.CheckedAt)
             .ToListAsync();
 
-        var (partialFillCount, partialFillRatePct, avgFillRatioPct) = CalculatePartialFillStats(trades);
+        var (partialFillCount, partialFillRatePct, avgFillRatioPct) = CalculatePartialFillStats(openedInWindow);
 
         var classifiedRejections = rejections
             .Select(r => (Rejection: r, Classification: ClassifyRejection(r.Reason)))
@@ -327,25 +349,25 @@ public class AnalyticsEngine
 
             // Overview
             TotalAlerts      = totalAlerts,
-            TotalTrades      = trades.Count,
+            TotalTrades      = openedInWindow.Count,
             OpenTrades       = open.Count,
-            ClosedTrades     = closed.Count,
+            ClosedTrades     = closedInWindow.Count,
             FilterRatePct    = totalAlerts > 0
-                ? Math.Round((decimal)trades.Count / totalAlerts * 100, 1)
+                ? Math.Round((decimal)openedInWindow.Count / totalAlerts * 100, 1)
                 : 0,
-            OptionsTradesPct = trades.Count > 0
-                ? Math.Round((decimal)options_trades.Count / trades.Count * 100, 1)
+            OptionsTradesPct = openedInWindow.Count > 0
+                ? Math.Round((decimal)options_trades.Count / openedInWindow.Count * 100, 1)
                 : 0,
-            StockTradesPct   = trades.Count > 0
-                ? Math.Round((decimal)stock_trades.Count / trades.Count * 100, 1)
+            StockTradesPct   = openedInWindow.Count > 0
+                ? Math.Round((decimal)stock_trades.Count / openedInWindow.Count * 100, 1)
                 : 0,
 
             // Win/Loss
             Wins             = wins.Count,
             Losses           = losses.Count,
             BreakEvens       = breakEvens.Count,
-            WinRatePct       = closed.Count > 0
-                ? Math.Round((decimal)wins.Count / closed.Count * 100, 1)
+            WinRatePct       = closedInWindow.Count > 0
+                ? Math.Round((decimal)wins.Count / closedInWindow.Count * 100, 1)
                 : 0,
             AvgWinPct        = wins.Count > 0
                 ? Math.Round(wins.Average(t => t.PnLPct ?? 0), 2)
@@ -353,110 +375,101 @@ public class AnalyticsEngine
             AvgLossPct       = losses.Count > 0
                 ? Math.Round(losses.Average(t => t.PnLPct ?? 0), 2)
                 : 0,
-            AvgPnLPerTrade   = closed.Count > 0
-                ? Math.Round(closed.Average(t => t.PnL ?? 0), 2)
+            AvgPnLPerTrade   = closedInWindow.Count > 0
+                ? Math.Round(closedInWindow.Average(t => t.PnL ?? 0), 2)
                 : 0,
-            TotalPnL         = closed.Sum(t => t.PnL ?? 0),
+            TotalPnL         = closedInWindow.Sum(t => t.PnL ?? 0),
             LargestWin       = wins.Count > 0
                 ? wins.Max(t => t.PnL ?? 0)
                 : 0,
             LargestLoss      = losses.Count > 0
                 ? losses.Min(t => t.PnL ?? 0)
                 : 0,
-            MaxConsecutiveLosses = CalculateMaxConsecutiveLosses(closed),
+            MaxConsecutiveLosses = CalculateMaxConsecutiveLosses(closedInWindow),
 
             // Latency
-            AvgLatencyMs = trades.Count > 0
-                ? Math.Round(trades.Average(t => (double)t.LatencyMs), 0)
+            AvgLatencyMs = openedInWindow.Count > 0
+                ? Math.Round(openedInWindow.Average(t => (double)t.LatencyMs), 0)
                 : 0,
-            P50LatencyMs = Percentile(trades.Select(t => (double)t.LatencyMs).ToList(), 50),
-            P95LatencyMs = Percentile(trades.Select(t => (double)t.LatencyMs).ToList(), 95),
-            MaxLatencyMs = trades.Count > 0
-                ? trades.Max(t => (double)t.LatencyMs)
+            P50LatencyMs = Percentile(openedInWindow.Select(t => (double)t.LatencyMs).ToList(), 50),
+            P95LatencyMs = Percentile(openedInWindow.Select(t => (double)t.LatencyMs).ToList(), 95),
+            MaxLatencyMs = openedInWindow.Count > 0
+                ? openedInWindow.Max(t => (double)t.LatencyMs)
                 : 0,
 
             // Slippage
-            AvgSlippagePct = trades.Count > 0
-                ? Math.Round(trades.Average(t => t.SlippagePct), 3)
+            AvgSlippagePct = openedInWindow.Count > 0
+                ? Math.Round(openedInWindow.Average(t => t.SlippagePct), 3)
                 : 0,
-            MaxSlippagePct = trades.Count > 0
-                ? trades.Max(t => t.SlippagePct)
+            MaxSlippagePct = openedInWindow.Count > 0
+                ? openedInWindow.Max(t => t.SlippagePct)
                 : 0,
 
             // Exposure
-            AvgExposurePct = trades.Count > 0
-                ? Math.Round(trades.Average(t => t.ExposurePct), 1)
+            AvgExposurePct = openedInWindow.Count > 0
+                ? Math.Round(openedInWindow.Average(t => t.ExposurePct), 1)
                 : 0,
-            MaxExposurePct = trades.Count > 0
-                ? trades.Max(t => t.ExposurePct)
+            MaxExposurePct = openedInWindow.Count > 0
+                ? openedInWindow.Max(t => t.ExposurePct)
                 : 0,
 
             // Outcome breakdown
-            TargetHits   = closed.Count(t => t.Outcome == "TargetHit"),
-            StoppedOuts  = closed.Count(t => t.Outcome == "StoppedOut"),
-            XtradesExits = closed.Count(t => t.Outcome == "XtradesExit"),
+            TargetHits   = closedInWindow.Count(t => t.Outcome == "TargetHit"),
+            StoppedOuts  = closedInWindow.Count(t => t.Outcome == "StoppedOut"),
+            XtradesExits = closedInWindow.Count(t => t.Outcome == "XtradesExit"),
 
-            // Per trader
-            TraderBreakdown = trades
+            // Per trader, scoped to trades closed this period, so performance reflects P&L
+            // actually realized in the period rather than mixing in still-open entries
+            TraderBreakdown = closedInWindow
                 .GroupBy(t => t.TraderName ?? "Unknown")
                 .Select(g =>
                 {
-                    var traderClosed = g.Where(t => t.ClosedAt.HasValue).ToList();
-                    var traderWins   = traderClosed.Where(t => t.PnL > 0).ToList();
-                    var traderLosses = traderClosed.Where(t => t.PnL < 0).ToList();
+                    var traderWins   = g.Where(t => t.PnL > 0).ToList();
+                    var traderLosses = g.Where(t => t.PnL < 0).ToList();
                     return new TraderStats
                     {
                         TraderName     = g.Key,
                         TotalTrades    = g.Count(),
                         Wins           = traderWins.Count,
                         Losses         = traderLosses.Count,
-                        WinRatePct     = traderClosed.Count > 0
-                            ? Math.Round((decimal)traderWins.Count / traderClosed.Count * 100, 1)
-                            : 0,
+                        WinRatePct     = Math.Round((decimal)traderWins.Count / g.Count() * 100, 1),
                         AvgWinPct      = traderWins.Count > 0
                             ? Math.Round(traderWins.Average(t => t.PnLPct ?? 0), 2)
                             : 0,
                         AvgLossPct     = traderLosses.Count > 0
                             ? Math.Round(traderLosses.Average(t => t.PnLPct ?? 0), 2)
                             : 0,
-                        AvgPnLPerTrade = traderClosed.Count > 0
-                            ? Math.Round(traderClosed.Average(t => t.PnL ?? 0), 2)
-                            : 0,
-                        TotalPnL       = traderClosed.Sum(t => t.PnL ?? 0),
+                        AvgPnLPerTrade = Math.Round(g.Average(t => t.PnL ?? 0), 2),
+                        TotalPnL       = g.Sum(t => t.PnL ?? 0),
                     };
                 })
                 .OrderByDescending(t => t.AvgPnLPerTrade)
                 .ToList(),
 
-            // Per symbol
-            SymbolBreakdown = trades
+            // Per symbol, scoped to trades closed this period, same reasoning as TraderBreakdown
+            SymbolBreakdown = closedInWindow
                 .GroupBy(t => t.Symbol ?? "Unknown")
                 .Select(g =>
                 {
-                    var symClosed = g.Where(t => t.ClosedAt.HasValue).ToList();
-                    var symWins   = symClosed.Where(t => t.PnL > 0).ToList();
+                    var symWins = g.Where(t => t.PnL > 0).ToList();
                     return new SymbolStats
                     {
                         Symbol         = g.Key,
                         TotalTrades    = g.Count(),
                         Wins           = symWins.Count,
-                        WinRatePct     = symClosed.Count > 0
-                            ? Math.Round((decimal)symWins.Count / symClosed.Count * 100, 1)
-                            : 0,
-                        AvgPnLPerTrade = symClosed.Count > 0
-                            ? Math.Round(symClosed.Average(t => t.PnL ?? 0), 2)
-                            : 0,
-                        TotalPnL       = symClosed.Sum(t => t.PnL ?? 0),
+                        WinRatePct     = Math.Round((decimal)symWins.Count / g.Count() * 100, 1),
+                        AvgPnLPerTrade = Math.Round(g.Average(t => t.PnL ?? 0), 2),
+                        TotalPnL       = g.Sum(t => t.PnL ?? 0),
                     };
                 })
                 .OrderByDescending(s => s.TotalPnL)
                 .ToList(),
 
             // Daily P&L series, grouped by ET date for accurate market-day alignment
-            DailyPnLSeries = BuildDailyPnLSeries(closed),
+            DailyPnLSeries = BuildDailyPnLSeries(closedInWindow),
 
             // All trades detail table
-            AllTrades = trades.Select(t => new TradeRow
+            AllTrades = allRelevantTrades.Select(t => new TradeRow
             {
                 OrderId         = t.Id,
                 TraderName      = t.TraderName,
@@ -482,10 +495,10 @@ public class AnalyticsEngine
             }).ToList(),
 
             // Execution Quality
-            TotalEntryAttempts = trades.Count + rejections.Count,
+            TotalEntryAttempts = openedInWindow.Count + rejections.Count,
             OrdersRejectedCount = rejections.Count,
-            RejectionRatePct = (trades.Count + rejections.Count) > 0
-                ? Math.Round((decimal)rejections.Count / (trades.Count + rejections.Count) * 100, 1)
+            RejectionRatePct = (openedInWindow.Count + rejections.Count) > 0
+                ? Math.Round((decimal)rejections.Count / (openedInWindow.Count + rejections.Count) * 100, 1)
                 : 0,
             PartialFillCount = partialFillCount,
             PartialFillRatePct = partialFillRatePct,

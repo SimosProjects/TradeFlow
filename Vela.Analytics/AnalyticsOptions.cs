@@ -16,8 +16,10 @@ public class AnalyticsOptions
     ///   --report weekly
     ///   --report monthly
     ///   --report custom --from 2026-05-01 --to 2026-05-31
+    /// The now parameter overrides DateTimeOffset.UtcNow for the weekly/monthly/custom-default
+    /// window calculation, so callers can pin the clock for testing.
     /// </summary>
-    public static AnalyticsOptions Parse(string[] args)
+    public static AnalyticsOptions Parse(string[] args, DateTimeOffset? now = null)
     {
         var reportType = ReportType.Weekly;
         DateTimeOffset? from = null;
@@ -56,25 +58,28 @@ public class AnalyticsOptions
 
         // Calculate date range in ET, all market activity is measured in ET
         var et = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
-        var nowEt = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, et);
+        var nowEt = TimeZoneInfo.ConvertTime(now ?? DateTimeOffset.UtcNow, et);
 
+        // Upper bound is today, not tomorrow, so consecutive scheduled runs never overlap.
+        // The report-run day itself belongs to the following window, not this one, since
+        // that's the boundary convention already confirmed against the manual reconciliation.
         var (resolvedFrom, resolvedTo) = reportType switch
         {
             ReportType.Weekly => (
                 nowEt.AddDays(-7).Date.ToDateTimeOffset(et),
-                nowEt.Date.AddDays(1).ToDateTimeOffset(et)),
+                nowEt.Date.ToDateTimeOffset(et)),
 
             ReportType.Monthly => (
                 nowEt.AddDays(-30).Date.ToDateTimeOffset(et),
-                nowEt.Date.AddDays(1).ToDateTimeOffset(et)),
+                nowEt.Date.ToDateTimeOffset(et)),
 
             ReportType.Custom => (
                 from ?? nowEt.AddDays(-7).Date.ToDateTimeOffset(et),
-                to?.AddDays(1) ?? nowEt.Date.AddDays(1).ToDateTimeOffset(et)),
+                to?.AddDays(1) ?? nowEt.Date.ToDateTimeOffset(et)),
 
             _ => (
                 nowEt.AddDays(-7).Date.ToDateTimeOffset(et),
-                nowEt.Date.AddDays(1).ToDateTimeOffset(et))
+                nowEt.Date.ToDateTimeOffset(et))
         };
 
         return new AnalyticsOptions

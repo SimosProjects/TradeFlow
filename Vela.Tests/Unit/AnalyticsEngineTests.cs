@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Vela.Analytics;
 using Vela.Worker.Data;
 
@@ -5,6 +7,116 @@ namespace Vela.Tests.Unit;
 
 public class AnalyticsEngineTests
 {
+    // -- Builders --
+
+    private static TradeMetric BuildTrade(
+        string id,
+        DateTimeOffset alertReceivedAt,
+        DateTimeOffset? closedAt = null,
+        decimal? pnl = null,
+        string traderName = "SPYGLASS",
+        string symbol = "AAPL") => new()
+    {
+        Id              = id,
+        TraderName      = traderName,
+        Symbol          = symbol,
+        TradeType       = "Stock",
+        AlertReceivedAt = alertReceivedAt,
+        OrderSubmittedAt = alertReceivedAt,
+        OrderFilledAt   = alertReceivedAt,
+        ClosedAt        = closedAt,
+        PnL             = pnl,
+        Outcome         = closedAt.HasValue ? "XtradesExit" : null,
+    };
+
+    private static VelaDbContext BuildDb(params TradeMetric[] trades)
+    {
+        var db = new VelaDbContext(new DbContextOptionsBuilder<VelaDbContext>()
+            .UseInMemoryDatabase($"analytics_{Guid.NewGuid():N}")
+            .Options);
+        db.TradeMetrics.AddRange(trades);
+        db.SaveChanges();
+        return db;
+    }
+
+    // -- RunAsync: report window is scoped by ClosedAt for realized-P&L sections, not
+    // AlertReceivedAt, so a trade spanning multiple report windows is never silently dropped --
+
+    [Fact]
+    public async Task RunAsync_TradeOpenedInOneWindowAndClosedTwoWindowsLater_CountsTowardCloseWindowOnly()
+    {
+        var weekN       = new DateTimeOffset(2026, 8, 3, 0, 0, 0, TimeSpan.Zero);
+        var weekNPlus2  = weekN.AddDays(14);
+
+        var trade = BuildTrade(
+            id: "spanning-trade",
+            alertReceivedAt: weekN.AddDays(1),
+            closedAt: weekNPlus2.AddDays(2),
+            pnl: 250m);
+
+        using var db = BuildDb(trade);
+        var engine = new AnalyticsEngine(db, NullLogger<AnalyticsEngine>.Instance);
+
+        var weekNReport = await engine.RunAsync(new AnalyticsOptions
+        {
+            Report = ReportType.Custom,
+            From   = weekN,
+            To     = weekN.AddDays(7),
+        });
+        var weekNPlus2Report = await engine.RunAsync(new AnalyticsOptions
+        {
+            Report = ReportType.Custom,
+            From   = weekNPlus2,
+            To     = weekNPlus2.AddDays(7),
+        });
+
+        // Week N saw the entry, but the close falls outside its window
+        weekNReport.TotalTrades.Should().Be(1);
+        weekNReport.ClosedTrades.Should().Be(0);
+        weekNReport.TotalPnL.Should().Be(0);
+        weekNReport.TraderBreakdown.Should().BeEmpty();
+        weekNReport.SymbolBreakdown.Should().BeEmpty();
+
+        // Week N+2 never saw the entry (AlertReceivedAt is two windows earlier), but the close
+        // and its P&L must still land here, not vanish between reports
+        weekNPlus2Report.TotalTrades.Should().Be(0);
+        weekNPlus2Report.ClosedTrades.Should().Be(1);
+        weekNPlus2Report.TotalPnL.Should().Be(250m);
+        weekNPlus2Report.TraderBreakdown.Should()
+            .ContainSingle(t => t.TraderName == "SPYGLASS" && t.TotalPnL == 250m);
+        weekNPlus2Report.SymbolBreakdown.Should()
+            .ContainSingle(s => s.Symbol == "AAPL" && s.TotalPnL == 250m);
+    }
+
+    [Fact]
+    public async Task RunAsync_TradeOpenedWellBeforeWindow_ClosedInsideWindow_IsNotDroppedFromReport()
+    {
+        var windowStart = new DateTimeOffset(2026, 8, 21, 0, 0, 0, TimeSpan.Zero);
+
+        var trade = BuildTrade(
+            id: "opened-long-before",
+            alertReceivedAt: windowStart.AddDays(-18),
+            closedAt: windowStart.AddDays(3),
+            pnl: 648.52m,
+            symbol: "MRK");
+
+        using var db = BuildDb(trade);
+        var engine = new AnalyticsEngine(db, NullLogger<AnalyticsEngine>.Instance);
+
+        var report = await engine.RunAsync(new AnalyticsOptions
+        {
+            Report = ReportType.Custom,
+            From   = windowStart,
+            To     = windowStart.AddDays(7),
+        });
+
+        report.ClosedTrades.Should().Be(1);
+        report.Wins.Should().Be(1);
+        report.TotalPnL.Should().Be(648.52m);
+        report.TraderBreakdown.Should().ContainSingle(t => t.TraderName == "SPYGLASS" && t.TotalPnL == 648.52m);
+        report.SymbolBreakdown.Should().ContainSingle(s => s.Symbol == "MRK" && s.TotalPnL == 648.52m);
+    }
+
     // -- ClassifyRejection --
 
     [Theory]
